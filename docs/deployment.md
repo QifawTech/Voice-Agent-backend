@@ -229,7 +229,56 @@ docker compose -f docker-compose.prod.yml run --rm api python create_super_admin
 
 ---
 
-## 7. LiveKit server (real-time voice)
+## 7. Backing services: PostgreSQL, Redis & LiveKit
+
+The committed `docker-compose.yml` runs all three in **dev mode** (ephemeral,
+single-node, hard-coded/`--dev` credentials). That is fine for a laptop and
+**not** for production. In production, provision each properly and point the
+backend at it via env vars.
+
+### 7.1 PostgreSQL 16
+
+The source of truth — tenants, users, tools, analytics, conversation logs.
+
+**Recommended: managed.** RDS/Aurora PostgreSQL, Cloud SQL, Azure Database,
+Supabase, Neon, etc. You get backups, failover, and patching for free.
+
+Whatever you choose:
+- Version **16** (matches dev; the app uses no exotic features, but keep parity).
+- Create a dedicated database and least-privilege user (not the admin/superuser).
+- Require TLS. Keep the async driver scheme in the URL:
+  ```
+  DATABASE_URL=postgresql+asyncpg://USER:PASSWORD@HOST:5432/voice_agent
+  # add ?ssl=require (asyncpg) if your provider needs it enforced
+  ```
+- Size the connection pool against the DB's `max_connections`: each API worker
+  and each voice worker opens its own pool, so
+  `(api_workers + voice_workers) × pool_size` must stay under the limit.
+
+**Self-hosted alternative** (VM or a hardened container, _not_ the dev compose):
+real password via secrets, a persistent volume with monitoring, `pg_dump` /
+PITR backups (see §11), and the port closed to the public internet — reachable
+only from the app subnet.
+
+### 7.2 Redis 7
+
+Holds voice sessions and rate-limit counters. Losing it drops in-flight voice
+sessions but no durable data.
+
+**Recommended: managed.** ElastiCache, Memorystore, Azure Cache, Upstash, etc.
+
+- Version **7**.
+- Enable **AUTH** (and TLS if offered); put the password in the URL and use the
+  `rediss://` scheme when TLS is on:
+  ```
+  REDIS_URL=redis://:PASSWORD@HOST:6379/0       # plaintext
+  REDIS_URL=rediss://:PASSWORD@HOST:6379/0      # TLS
+  ```
+- A `maxmemory` + `allkeys-lru` (or `volatile-lru`) eviction policy is sensible
+  given the data is cache/session-like.
+- Not publicly exposed — reachable only from the app subnet.
+
+### 7.3 LiveKit server (real-time voice)
 
 The dev `docker-compose.yml` starts `livekit-server --dev` with keys
 `devkey: secret`. **That is for local only.** For production either:

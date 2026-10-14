@@ -1,0 +1,51 @@
+# Voice Agent Backend - Dependencies
+# Core
+fastapi==0.115.12
+uvicorn[standard]==0.34.3
+
+# Database
+sqlalchemy[asyncio]==2.0.41
+asyncpg==0.31.0
+alembic==1.16.2
+
+# Redis
+redis[hiredis]==6.2.0
+
+# Configuration
+pydantic-settings==2.9.1
+python-dotenv==1.1.1
+
+# Logging
+structlog==25.4.0
+
+# Security (needed Day 4, installed now)
+passlib[bcrypt]==1.7.4
+# bcrypt MUST stay below 4.1. passlib 1.7.4 probes its backend with a secret
+# longer than 72 bytes; bcrypt >= 4.1 raises ValueError instead of truncating,
+# so every hash_password/verify_password call crashes and register + login
+# return 500. Unpinned, a fresh install pulls bcrypt 5.x and the app is broken
+# on arrival. Remove this pin only when passlib is replaced or updated.
+bcrypt==4.0.1
+python-jose[cryptography]==3.5.0
+cryptography==45.0.4
+
+# HTTP Client
+httpx==0.28.1
+
+# AI / LLM (Day 8 — DeepSeek uses OpenAI-compatible SDK)
+openai==1.82.0
+
+# WebSocket
+websockets==15.0.1
+
+# Speech — Sarvam AI (South Indian Languages STT/TTS)
+# Deepgram is accessed via OpenRouter REST API (uses httpx, already installed)
+sarvamai>=1.0.0
+
+# LiveKit — Real-time Voice Agent
+livekit-agents>=1.8.4
+livekit-plugins-openai>=1.8.4
+livekit-plugins-deepgram>=1.8.4
+livekit-plugins-sarvam>=1.8.4
+livekit-plugins-silero>=1.8.4
+livekit-api>=1.0.0

@@ -19,6 +19,10 @@ AI-powered voice ordering agent platform for restaurants. Enables customers to b
 
 > Running the frontend too? See the **Frontend** and **Running the Full Stack**
 > sections below for the complete end-to-end flow.
+>
+> **Deploying to a server?** See the DevOps guide:
+> [`docs/deployment.md`](docs/deployment.md) — covers production setup for both
+> backend (API + LiveKit worker) and frontend.
 
 ### 1. Prerequisites
 - [Anaconda/Miniconda](https://docs.conda.io/en/latest/miniconda.html)

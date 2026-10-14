@@ -15,7 +15,10 @@ AI-powered voice ordering agent platform for restaurants. Enables customers to b
 | **Auth** | JWT + API Keys |
 | **Logging** | structlog (structured JSON) |
 
-## Quick Start
+## Quick Start (Backend)
+
+> Running the frontend too? See the **Frontend** and **Running the Full Stack**
+> sections below for the complete end-to-end flow.
 
 ### 1. Prerequisites
 - [Anaconda/Miniconda](https://docs.conda.io/en/latest/miniconda.html)
@@ -55,16 +58,80 @@ cp .env.example .env
 alembic upgrade head
 ```
 
-### 6. Start Development Server
+### 6. Create a Super-Admin (first run only)
+Public signup only ever creates a `tenant_admin`, so the first platform
+super-admin must be created from the CLI:
 ```bash
-uvicorn app.main:app --reload --port 8000
+python create_super_admin.py
 ```
 
-### 7. Verify
-- **API Root:** http://localhost:8000
-- **Health Check:** http://localhost:8000/health
-- **Swagger Docs:** http://localhost:8000/docs
-- **ReDoc:** http://localhost:8000/redoc
+### 7. Start the API Server
+```bash
+# Port 8001 matches the frontend dev proxy (see the Frontend section below).
+uvicorn app.main:app --reload --port 8001
+```
+
+### 8. Start the LiveKit Voice-Agent Worker (separate terminal)
+Real-time voice needs the LiveKit worker running alongside the API. The
+LiveKit server itself is already started by `docker-compose up -d` (step 2).
+```bash
+# dev = auto-reload; use `start` for production
+python -m app.livekit_agent dev
+```
+
+### 9. Verify
+- **API Root:** http://localhost:8001
+- **Health Check:** http://localhost:8001/health
+- **Swagger Docs:** http://localhost:8001/docs
+- **ReDoc:** http://localhost:8001/redoc
+
+## Frontend
+
+The admin console lives in a **separate repo/folder** next to this one:
+`../Voice-Agent-frontend` (React 19 + Vite + TypeScript).
+
+### Prerequisites
+- [Node.js 20+](https://nodejs.org/) (ships with npm)
+
+### Run
+```bash
+cd ../Voice-Agent-frontend
+
+# 1. Install dependencies
+npm install
+
+# 2. (Optional) point at the backend.
+#    If you leave this unset, the Vite dev proxy forwards /api and /ws to
+#    http://localhost:8001 automatically — so no .env is needed in dev as
+#    long as the API runs on port 8001.
+#    To call a different backend, create a .env file:
+#    echo "VITE_API_URL=http://localhost:8001" > .env
+
+# 3. Start the dev server
+npm run dev          # → http://localhost:5174
+```
+
+### Build for production
+```bash
+npm run build        # type-checks, then outputs to dist/
+npm run preview      # serve the production build locally
+```
+
+## Running the Full Stack
+
+Start these in order. Each `uvicorn` / `npm` / worker command needs its **own terminal**.
+
+| # | Terminal | Command (from its folder) | Result |
+|---|----------|---------------------------|--------|
+| 1 | backend | `docker-compose up -d` | Postgres, Redis, LiveKit server |
+| 2 | backend | `alembic upgrade head` | DB schema (first run) |
+| 3 | backend | `uvicorn app.main:app --reload --port 8001` | REST API → http://localhost:8001 |
+| 4 | backend | `python -m app.livekit_agent dev` | Real-time voice worker |
+| 5 | frontend | `npm run dev` | Admin console → http://localhost:5174 |
+
+> **Port note:** the frontend dev server (`5174`) proxies `/api` and `/ws` to the
+> backend on **`8001`**. Run the API on `8001` in dev, or set `VITE_API_URL` to
+> wherever your API actually listens.
 
 ## Project Structure
 
@@ -127,6 +194,7 @@ Voice-Agent-backend/
 |---------|------|-------------|
 | PostgreSQL | `5432` | `voice_agent_user` / `voice_agent_pass_2026` |
 | Redis | `6379` | No auth (local dev) |
+| LiveKit | `7880` | `devkey` / `secret` (dev mode) |
 
 ## License
 

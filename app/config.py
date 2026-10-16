@@ -18,7 +18,7 @@ class Settings(BaseSettings):
         case_sensitive=False,
         extra="ignore",
     )
-
+    ## test 
     # ---- Application ----
     APP_NAME: str = "Voice Agent Platform"
     APP_VERSION: str = "0.1.0"

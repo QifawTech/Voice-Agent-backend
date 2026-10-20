@@ -1,5 +1,5 @@
 # Base image aaga Python 3.10-ai edukkirom
-FROM python:3.10-slim
+FROM python:3.11-slim
 
 # Container-kull nambha working directory
 WORKDIR /app

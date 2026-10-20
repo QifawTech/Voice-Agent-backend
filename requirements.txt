@@ -49,3 +49,6 @@ livekit-plugins-deepgram>=1.8.4
 livekit-plugins-sarvam>=1.8.4
 livekit-plugins-silero>=1.8.4
 livekit-api>=1.0.0
+
+# Email validation for Pydantic
+email-validator>=2.1.0

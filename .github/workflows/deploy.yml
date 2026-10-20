@@ -1,25 +1,65 @@
-name: Deploy Voice Agent to EC2
+name: Backend CI/CD Pipeline
 
 on:
   push:
-    branches: [ dev ]
+    branches:
+      - main
 
 jobs:
-  deploy:
+  # Job 1: GitHub Server-il Build aagi ECR-kku pogum (EC2 Load kuraikka)
+  build-and-push:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
+      - name: Checkout Code
         uses: actions/checkout@v3
 
-      - name: Deploy to EC2 via SSH
-        uses: appleboy/ssh-action@master
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v2
         with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ubuntu
-          key: ${{ secrets.EC2_SSH_KEY }}
-          script: |
-            cd ~/Voice-Agent-backend
-            git pull origin dev
-            source venv/bin/activate
-            pip install -r requirements.txt
-            pm2 reload voice-agent
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Build, tag, and push image to Amazon ECR
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: voice-agent-backend
+          IMAGE_TAG: latest
+        run: |
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+
+  # Job 2: EC2 Server-il Auto Deploy aagum (Self-hosted runner vazhiyaaga)
+  deploy:
+    needs: build-and-push
+    runs-on: self-hosted
+    steps:
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Create .env file for Backend
+        run: |
+          cd ~/voice-infra
+          echo "${{ secrets.PROD_ENV_FILE }}" > .env
+
+      - name: Pull New Image and Restart Containers
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: voice-agent-backend
+          IMAGE_TAG: latest
+        run: |
+          cd ~/voice-infra
+          docker compose pull backend
+          docker compose up -d backend

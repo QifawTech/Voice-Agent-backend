@@ -48,18 +48,20 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ secrets.AWS_REGION }}
 
-      - name: Get ECR Login Password
-        id: ecr-pass
+      - name: Get ECR Login Info
+        id: ecr-info
         run: |
           PASS=$(aws ecr get-login-password --region ${{ secrets.AWS_REGION }})
           echo "::add-mask::$PASS"
           echo "password=$PASS" >> $GITHUB_OUTPUT
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          echo "registry=${ACCOUNT_ID}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com" >> $GITHUB_OUTPUT
 
       - name: Deploy to EC2 via SSH
         uses: appleboy/ssh-action@v1.0.3
         env:
-          ECR_PASS: ${{ steps.ecr-pass.outputs.password }}
-          REGISTRY: ${{ needs.build-and-push.outputs.registry }}
+          ECR_PASS: ${{ steps.ecr-info.outputs.password }}
+          REGISTRY: ${{ steps.ecr-info.outputs.registry }}
           ENV_CONTENT: ${{ secrets.ENV_FILE }}
         with:
           host: ${{ secrets.EC2_HOST }}
@@ -74,6 +76,9 @@ jobs:
 
             # Update .env file
             printf '%s\n' "$ENV_CONTENT" > .env
+
+            # Check docker-compose syntax
+            docker compose config || cat -n docker-compose.yml
 
             # Pull New Image and Restart Containers
             docker compose pull backend

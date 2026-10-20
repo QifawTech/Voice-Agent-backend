@@ -57,20 +57,23 @@ jobs:
 
       - name: Deploy to EC2 via SSH
         uses: appleboy/ssh-action@v1.0.3
+        env:
+          ECR_PASS: ${{ steps.ecr-pass.outputs.password }}
+          REGISTRY: ${{ needs.build-and-push.outputs.registry }}
+          ENV_CONTENT: ${{ secrets.ENV_FILE }}
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ubuntu
           key: ${{ secrets.EC2_SSH_KEY }}
+          envs: ECR_PASS,REGISTRY,ENV_CONTENT
           script: |
             cd ~/voice-infra
 
             # Login to ECR on EC2
-            echo "${{ steps.ecr-pass.outputs.password }}" | docker login --username AWS --password-stdin ${{ needs.build-and-push.outputs.registry }}
+            echo "$ECR_PASS" | docker login --username AWS --password-stdin "$REGISTRY"
 
             # Update .env file
-            cat << 'EOF' > .env
-${{ secrets.ENV_FILE }}
-EOF
+            printf '%s\n' "$ENV_CONTENT" > .env
 
             # Pull New Image and Restart Containers
             docker compose pull backend

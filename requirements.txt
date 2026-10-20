@@ -33,7 +33,7 @@ cryptography==45.0.4
 httpx==0.28.1
 
 # AI / LLM (Day 8 — DeepSeek uses OpenAI-compatible SDK)
-openai==1.82.0
+openai>=1.82.0
 
 # WebSocket
 websockets==15.0.1

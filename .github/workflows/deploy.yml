@@ -4,11 +4,14 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
 
 jobs:
   # Job 1: GitHub Server-il Build aagi ECR-kku pogum (EC2 Load kuraikka)
   build-and-push:
     runs-on: ubuntu-latest
+    outputs:
+      registry: ${{ steps.login-ecr.outputs.registry }}
     steps:
       - name: Checkout Code
         uses: actions/checkout@v3
@@ -33,10 +36,10 @@ jobs:
           docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
 
-  # Job 2: EC2 Server-il Auto Deploy aagum (Self-hosted runner vazhiyaaga)
+  # Job 2: EC2 Server-il Auto Deploy aagum (SSH vazhiyaaga)
   deploy:
     needs: build-and-push
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v2
@@ -45,21 +48,36 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ secrets.AWS_REGION }}
 
-      - name: Login to Amazon ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v1
-
-      - name: Create .env file for Backend
+      - name: Get ECR Login Password
+        id: ecr-pass
         run: |
-          cd ~/voice-infra
-          echo "${{ secrets.PROD_ENV_FILE }}" > .env
+          PASS=$(aws ecr get-login-password --region ${{ secrets.AWS_REGION }})
+          echo "::add-mask::$PASS"
+          echo "password=$PASS" >> $GITHUB_OUTPUT
 
-      - name: Pull New Image and Restart Containers
-        env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          ECR_REPOSITORY: voice-agent-backend
-          IMAGE_TAG: latest
-        run: |
-          cd ~/voice-infra
-          docker compose pull backend
-          docker compose up -d backend
+      - name: Deploy to EC2 via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ubuntu
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            cd ~/voice-infra
+
+            # Login to ECR on EC2
+            echo "${{ steps.ecr-pass.outputs.password }}" | docker login --username AWS --password-stdin ${{ needs.build-and-push.outputs.registry }}
+
+            # Update .env file
+            cat << 'EOF' > .env
+${{ secrets.ENV_FILE }}
+EOF
+
+            # Pull New Image and Restart Containers
+            docker compose pull backend
+            docker compose up -d backend
+
+            # Clean up old unused images to save EC2 disk space
+            docker image prune -f
+
+            # Show container status in GitHub Actions log
+            docker compose ps

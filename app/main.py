@@ -22,7 +22,7 @@ from app.logger import get_logger, setup_logging
 from app.redis_client import close_redis, init_redis, verify_redis_connection
 
 logger = get_logger(__name__)
-
+#test
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:

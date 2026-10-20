@@ -1,4 +1,4 @@
-# Base image aaga Python 3.10-ai edukkirom
+# Base image aaga Python 3.11-ai edukkirom
 FROM python:3.11-slim
 
 # Container-kull nambha working directory

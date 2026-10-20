@@ -40,7 +40,7 @@ websockets==15.0.1
 
 # Speech — Sarvam AI (South Indian Languages STT/TTS)
 # Deepgram is accessed via OpenRouter REST API (uses httpx, already installed)
-sarvamai>=1.0.0
+sarvamai>=0.1.0
 
 # LiveKit — Real-time Voice Agent
 livekit-agents>=1.8.4

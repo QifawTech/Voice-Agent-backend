@@ -1,0 +1,65 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# Secrets / credentials
+*.pem
+*.key
+credentials.json
+secrets.json
+token.json
+
+# Local databases
+*.db
+*.sqlite
+*.sqlite3
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+*.egg
+
+# Testing
+.pytest_cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# Alembic
+alembic/versions/__pycache__/
+
+# Logs
+*.log
+logs/
+
+# One-off / throwaway scripts (not part of the deployable app)
+/fix_api_tokens.py
+/fix_tenant_config.py
+/get_credentials.py
+
+# Ad-hoc tests and manual test pages
+/test_*.py
+/test_*.html

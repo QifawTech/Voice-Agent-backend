@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
 
 jobs:
   # Job 1: GitHub Server-il Build aagi ECR-kku pogum (EC2 Load kuraikka)
@@ -74,3 +75,9 @@ EOF
             # Pull New Image and Restart Containers
             docker compose pull backend
             docker compose up -d backend
+
+            # Clean up old unused images to save EC2 disk space
+            docker image prune -f
+
+            # Show container status in GitHub Actions log
+            docker compose ps

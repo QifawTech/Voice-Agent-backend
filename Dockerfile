@@ -15,4 +15,4 @@ COPY . .
 EXPOSE 8000
 
 # App-ai run seiyum command
-CMD ["sh", "-c", "python -m app.livekit_agent & uvicorn app.main:app --host 0.0.0.0 --port 8000"]
+CMD ["sh", "-c", "python -m app.livekit_agent start & uvicorn app.main:app --host 0.0.0.0 --port 8000"]

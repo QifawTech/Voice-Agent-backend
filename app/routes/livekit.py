@@ -184,10 +184,12 @@ async def generate_livekit_token(
             detail="Failed to generate LiveKit token.",
         )
 
-    # Determine the WebSocket URL for the frontend
-    # In development: ws://localhost:7880
-    # In production: wss://your-livekit-server.example.com
-    livekit_ws_url = settings.LIVEKIT_URL
+    # Determine the WebSocket URL for the frontend (the BROWSER).
+    # The browser can't reach the worker's internal/private LIVEKIT_URL, so prefer
+    # LIVEKIT_PUBLIC_URL (the instance's public IP) and fall back to LIVEKIT_URL for dev.
+    #   dev:  ws://localhost:7880
+    #   prod: ws://<public-ip>:7880  (or wss://<domain> behind TLS)
+    livekit_ws_url = settings.LIVEKIT_PUBLIC_URL or settings.LIVEKIT_URL
 
     logger.info(
         "livekit_token_generated",

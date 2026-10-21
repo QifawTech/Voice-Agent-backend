@@ -61,7 +61,12 @@ class Settings(BaseSettings):
     SARVAM_TTS_SPEAKER: str = "shreya"
 
     # ---- LiveKit (Real-time Voice Agent) ----
+    # LIVEKIT_URL: the address the WORKER uses to connect (internal/private on EC2).
+    # LIVEKIT_PUBLIC_URL: the address handed to BROWSERS in the token response.
+    #   On a single EC2 box the worker uses the private IP but the browser needs the
+    #   public IP, so these differ. Empty public URL falls back to LIVEKIT_URL.
     LIVEKIT_URL: str = "ws://localhost:7880"
+    LIVEKIT_PUBLIC_URL: str = ""
     LIVEKIT_API_KEY: str = "devkey"
     LIVEKIT_API_SECRET: str = "secret"
 

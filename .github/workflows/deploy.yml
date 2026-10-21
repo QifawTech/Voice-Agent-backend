@@ -68,6 +68,7 @@ jobs:
           username: ubuntu
           key: ${{ secrets.EC2_SSH_KEY }}
           envs: ECR_PASS,REGISTRY,ENV_CONTENT
+          script_stop: true   # abort the deploy if any command (e.g. migrations) fails
           script: |
             cd ~/voice-infra
 
@@ -80,8 +81,16 @@ jobs:
             # Check docker-compose syntax
             docker compose config || cat -n docker-compose.yml
 
-            # Pull New Image and Restart Containers
+            # Pull the new image
             docker compose pull backend
+
+            # Apply DB migrations using the NEW image, BEFORE starting the app.
+            # Runs as a one-off container on the same network as postgres. With
+            # script_stop:true, a failure here aborts the deploy so the app is never
+            # started against a mismatched schema.
+            docker compose run --rm backend alembic upgrade head
+
+            # Start / replace the backend with the new image
             docker compose up -d backend
 
             # Clean up old unused images to save EC2 disk space

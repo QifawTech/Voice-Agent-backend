@@ -63,3 +63,8 @@ logs/
 # Ad-hoc tests and manual test pages
 /test_*.py
 /test_*.html
+
+# production secrets (never commit) — but keep the templates
+.env.prod
+!.env.example
+!.env.prod.example

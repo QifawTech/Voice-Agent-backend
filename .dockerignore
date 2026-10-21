@@ -1,0 +1,25 @@
+# Keeps the build context small and secrets out of the image
+.git
+.github
+**/__pycache__
+**/*.py[cod]
+*.egg-info
+venv
+.venv
+env/
+.env
+.env.*
+!.env.example
+.pytest_cache
+.mypy_cache
+.ruff_cache
+*.sqlite3
+*.db
+test.db
+docs
+Readme.md
+*.log
+.DS_Store
+.idea
+.vscode
+test_livekit.html

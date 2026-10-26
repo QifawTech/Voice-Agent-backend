@@ -21,9 +21,10 @@ restaurant_id, and room instances into the tools without relying on global state
 
 import json
 import logging
+from contextlib import nullcontext
 from typing import Any, Sequence
 
-from livekit.agents import llm
+from livekit.agents import RunContext, llm
 
 from app.services.tool_presets import PRESET_SPECS
 from app.services.tool_result import format_tool_result
@@ -34,6 +35,10 @@ logger = logging.getLogger("livekit-tools")
 
 # Spoken while a fetch is in flight, so the line is not silent for a second or
 # two. Keyed by tool name: a tool with no entry here simply says nothing.
+#
+# These are handed to RunContext.with_filler rather than spoken before the
+# fetch, so the request and the filler overlap instead of queueing. See
+# _execute_action for why that matters.
 _MENU_FILLER_PHRASES: dict[str, dict[str, str]] = {
     "check_menu": {
         "english": "Let me fetch the latest menu details from this restaurant.",
@@ -58,6 +63,11 @@ _MENU_FILLER_PHRASES: dict[str, dict[str, str]] = {
     },
 }
 
+# How long the line must stay quiet before a filler is worth playing. A fetch
+# that returns inside this window plays nothing, which keeps the fast path
+# silent instead of padding it with a sentence the customer doesn't need.
+_FILLER_DELAY_SECONDS = 0.5
+
 
 class RestaurantTools(llm.Toolset):
     """
@@ -81,7 +91,6 @@ class RestaurantTools(llm.Toolset):
         self.restaurant_id = restaurant_id
         self.room = room
         self.language = language
-        self._agent_session = None
 
         # Tie every row this call writes (order events, and the final
         # conversation log) to one session id, so the dashboard groups them.
@@ -111,10 +120,6 @@ class RestaurantTools(llm.Toolset):
             f"{', '.join(sorted(self._specs)) or 'none'}"
         )
 
-    def set_session(self, session: Any) -> None:
-        """Set the AgentSession so tools can speak filler phrases while fetching."""
-        self._agent_session = session
-
     # ──────────────────────────────────────────────────────────────
     # Dynamic tool construction
     # ──────────────────────────────────────────────────────────────
@@ -127,8 +132,8 @@ class RestaurantTools(llm.Toolset):
         LiveKit passes the model's arguments through as a dict.
         """
 
-        async def _invoke(raw_arguments: dict[str, Any]) -> str:
-            return await self._execute_action(spec.name, raw_arguments)
+        async def _invoke(raw_arguments: dict[str, Any], context: RunContext) -> str:
+            return await self._execute_action(spec.name, raw_arguments, context)
 
         # A readable name in logs and traces; LiveKit takes the real name from
         # the raw schema.
@@ -140,17 +145,9 @@ class RestaurantTools(llm.Toolset):
     # Execution
     # ──────────────────────────────────────────────────────────────
 
-    async def _say_filler(self, tool_name: str) -> None:
-        """Speak a brief filler phrase while the tool fetches data."""
-        if not self._agent_session:
-            return
-        phrase = _MENU_FILLER_PHRASES.get(tool_name, {}).get(self.language, "")
-        if not phrase:
-            return
-        try:
-            await self._agent_session.say(phrase, allow_interruptions=False)
-        except Exception as e:
-            logger.warning(f"Could not speak filler phrase: {e}")
+    def _filler_phrase(self, tool_name: str) -> str:
+        """This tool's filler line in the call's language, or "" if it has none."""
+        return _MENU_FILLER_PHRASES.get(tool_name, {}).get(self.language, "")
 
     @property
     def outcome(self) -> str:
@@ -192,7 +189,12 @@ class RestaurantTools(llm.Toolset):
                 result=result,
             )
 
-    async def _execute_action(self, function_name: str, arguments: dict[str, Any]) -> str:
+    async def _execute_action(
+        self,
+        function_name: str,
+        arguments: dict[str, Any],
+        context: RunContext | None = None,
+    ) -> str:
         """Bridge a LiveKit tool call to the existing ActionRouter."""
         from app.services.action_router import ActionRouter
 
@@ -222,18 +224,33 @@ class RestaurantTools(llm.Toolset):
             await broadcast_debug("tool_result", {"function": function_name, "error": "No tenant"})
             return "I'm sorry, I couldn't process that — the restaurant connection isn't set up yet."
 
-        await self._say_filler(function_name)
-
         router = ActionRouter()
 
+        # Schedule the filler alongside the fetch rather than speaking it first.
+        # session.say() returns a SpeechHandle whose await waits for full audio
+        # playout, and the scheduler authorises one speech at a time, so awaiting
+        # a filler here held the HTTP request behind the LLM's preamble *and* the
+        # filler itself — several seconds before the fetch even started.
+        # with_filler instead runs a background scheduler: the request goes out
+        # immediately, the phrase plays only if the line is still quiet after
+        # _FILLER_DELAY_SECONDS, and it stays interruptible so the customer can
+        # barge in.
+        phrase = self._filler_phrase(function_name)
+        filler = (
+            context.with_filler(phrase, delay=_FILLER_DELAY_SECONDS)
+            if phrase and context is not None
+            else nullcontext()
+        )
+
         try:
-            result = await router.execute(
-                function_name=function_name,
-                arguments=arguments,
-                tenant=self.tenant,
-                restaurant_id=self.restaurant_id,
-                tools=self._specs,
-            )
+            async with filler:
+                result = await router.execute(
+                    function_name=function_name,
+                    arguments=arguments,
+                    tenant=self.tenant,
+                    restaurant_id=self.restaurant_id,
+                    tools=self._specs,
+                )
 
             await broadcast_debug("tool_result", {"function": function_name, "result": result})
 

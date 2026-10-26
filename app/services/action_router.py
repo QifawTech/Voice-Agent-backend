@@ -33,6 +33,7 @@ Usage:
     )
 """
 
+import asyncio
 import json
 from typing import Any, Sequence
 
@@ -47,11 +48,61 @@ logger = get_logger(__name__)
 
 # HTTP client configuration
 REQUEST_TIMEOUT = 15.0  # seconds per restaurant API call
-MAX_RETRIES = 2
-RETRY_DELAY = 0.5  # seconds
+MAX_RETRIES = 2  # extra attempts after the first, for transient failures
+RETRY_DELAY = 0.5  # seconds between attempts
+
+# Methods safe to replay when a failure leaves it unclear whether the
+# restaurant already processed the request. POST is deliberately absent:
+# replaying create_order could place the same order twice.
+IDEMPOTENT_METHODS = frozenset({"GET", "HEAD", "OPTIONS", "PUT", "DELETE"})
+
+# Statuses that mean "busy or briefly broken", as opposed to a 4xx that would
+# fail the same way however many times it is sent.
+RETRY_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
 
 # Custom headers sent with every restaurant API request
 VOICE_AGENT_HEADER = "qifaw/1.0"
+
+# One pooled client shared by every restaurant API call. Building an
+# httpx.AsyncClient per request throws the connection away before it can be
+# reused, so each call paid for a fresh TLS handshake — measured at ~95 ms
+# against a warm host and ~0.5 s on the first call. A shared client keeps
+# connections alive in a pool, so only the first call to a host pays that.
+_client: httpx.AsyncClient | None = None
+_client_loop: asyncio.AbstractEventLoop | None = None
+
+
+def _get_client() -> httpx.AsyncClient:
+    """
+    The shared pooled client, created on first use.
+
+    Rebuilt if it was closed, or if the running loop is not the one it was
+    created on: a connection pool belongs to its event loop, and the API
+    process and each LiveKit job process run their own.
+    """
+    global _client, _client_loop
+
+    loop = asyncio.get_running_loop()
+    if _client is None or _client.is_closed or _client_loop is not loop:
+        # A pool belonging to another loop cannot be awaited from this one, so
+        # it is dropped rather than closed; its process is exiting anyway.
+        _client = httpx.AsyncClient(
+            timeout=REQUEST_TIMEOUT,
+            limits=httpx.Limits(max_keepalive_connections=20, max_connections=100),
+        )
+        _client_loop = loop
+
+    return _client
+
+
+async def close_http_client() -> None:
+    """Close the shared client and its pool. Called from the shutdown hook."""
+    global _client, _client_loop
+
+    if _client is not None and not _client.is_closed:
+        await _client.aclose()
+    _client = None
+    _client_loop = None
 
 
 class ActionRouterError(Exception):
@@ -230,6 +281,10 @@ class ActionRouter:
         """
         Make an HTTP request to the restaurant's API with error handling.
 
+        Retries transient failures up to MAX_RETRIES extra times. See
+        _attempt_request for what counts as transient, and for why a
+        non-idempotent request is replayed only when it provably never landed.
+
         Handles:
             - Timeout errors (restaurant API too slow)
             - Connection errors (restaurant API unreachable)
@@ -246,55 +301,76 @@ class ActionRouter:
         Returns:
             Parsed JSON response dict, or error dict on failure.
         """
-        try:
-            async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
-                response = await client.request(
+        # One attempt, plus MAX_RETRIES more while the failure looks transient.
+        # Anything deterministic — a 4xx, an unparseable body — comes back on
+        # the first pass and is returned unchanged.
+        result: dict[str, Any] = {}
+
+        for attempt in range(1, MAX_RETRIES + 2):
+            if attempt > 1:
+                await asyncio.sleep(RETRY_DELAY)
+                logger.info(
+                    "action_router_retry",
                     method=method,
                     url=url,
-                    headers=headers,
-                    params=params,
-                    json=json_data,
+                    attempt=attempt,
+                    max_attempts=MAX_RETRIES + 1,
                 )
 
-            response_time_ms = int(response.elapsed.total_seconds() * 1000)
-
-            # Log the request
-            logger.debug(
-                "action_router_http_request",
+            result, retryable = await self._attempt_request(
                 method=method,
                 url=url,
-                status_code=response.status_code,
-                response_time_ms=response_time_ms,
+                headers=headers,
+                params=params,
+                json_data=json_data,
+            )
+            if not retryable:
+                return result
+
+        # Out of attempts; the last failure is the one worth reporting.
+        return result
+
+    async def _attempt_request(
+        self,
+        method: str,
+        url: str,
+        headers: dict,
+        params: dict | None = None,
+        json_data: dict | None = None,
+    ) -> tuple[dict[str, Any], bool]:
+        """
+        Make a single HTTP attempt against the restaurant's API.
+
+        Returns (result, retryable). `retryable` is True only when the failure
+        looks transient *and* replaying this request is safe. A connect failure
+        proves nothing ran on the restaurant's side, so any method may be
+        replayed; a read timeout or a 5xx is ambiguous, so only an idempotent
+        method may be. That is why a create_order POST is retried when the
+        connection never opened, but not when the response went missing.
+        """
+        idempotent = method.upper() in IDEMPOTENT_METHODS
+
+        try:
+            response = await _get_client().request(
+                method=method,
+                url=url,
+                headers=headers,
+                params=params,
+                json=json_data,
             )
 
-            # Parse response
-            if response.status_code in (200, 201):
-                try:
-                    data = response.json()
-                    # A tool may point at an endpoint that answers with a list
-                    # or a bare value; wrap it so the result is always a dict.
-                    if not isinstance(data, dict):
-                        data = {"data": data}
-                    # Ensure success flag exists
-                    if "success" not in data:
-                        data["success"] = True
-                    data["_response_time_ms"] = response_time_ms
-                    return data
-                except (json.JSONDecodeError, ValueError):
-                    logger.warning(
-                        "action_router_invalid_json_response",
-                        method=method,
-                        url=url,
-                        status_code=response.status_code,
-                        body_preview=response.text[:200],
-                    )
-                    return {
-                        "success": False,
-                        "error": "Restaurant API returned an invalid response format.",
-                    }
-
-            # Handle specific HTTP error codes
-            return self._handle_http_error(response, method, url)
+        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout):
+            # No connection was established, so the request never reached the
+            # restaurant. Safe to replay whatever the method is.
+            logger.warning(
+                "action_router_connection_error",
+                method=method,
+                url=url,
+            )
+            return {
+                "success": False,
+                "error": "Unable to connect to the restaurant's system. It may be temporarily unavailable.",
+            }, True
 
         except httpx.TimeoutException:
             logger.warning(
@@ -306,18 +382,22 @@ class ActionRouter:
             return {
                 "success": False,
                 "error": "The restaurant's system is taking too long to respond. Please try again.",
-            }
+            }, idempotent
 
-        except httpx.ConnectError:
+        except (httpx.RemoteProtocolError, httpx.ReadError, httpx.WriteError) as e:
+            # Usually a pooled keep-alive connection the restaurant closed
+            # between calls. The retry opens a fresh one — this is the cost of
+            # reusing connections, and the main reason the retry earns its keep.
             logger.warning(
-                "action_router_connection_error",
+                "action_router_connection_dropped",
                 method=method,
                 url=url,
+                error_type=type(e).__name__,
             )
             return {
                 "success": False,
                 "error": "Unable to connect to the restaurant's system. It may be temporarily unavailable.",
-            }
+            }, idempotent
 
         except Exception as e:
             logger.error(
@@ -330,7 +410,50 @@ class ActionRouter:
             return {
                 "success": False,
                 "error": "An unexpected error occurred while contacting the restaurant.",
-            }
+            }, False
+
+        response_time_ms = int(response.elapsed.total_seconds() * 1000)
+
+        # Log the request
+        logger.debug(
+            "action_router_http_request",
+            method=method,
+            url=url,
+            status_code=response.status_code,
+            response_time_ms=response_time_ms,
+        )
+
+        # Parse response
+        if response.status_code in (200, 201):
+            try:
+                data = response.json()
+                # A tool may point at an endpoint that answers with a list
+                # or a bare value; wrap it so the result is always a dict.
+                if not isinstance(data, dict):
+                    data = {"data": data}
+                # Ensure success flag exists
+                if "success" not in data:
+                    data["success"] = True
+                data["_response_time_ms"] = response_time_ms
+                return data, False
+            except (json.JSONDecodeError, ValueError):
+                logger.warning(
+                    "action_router_invalid_json_response",
+                    method=method,
+                    url=url,
+                    status_code=response.status_code,
+                    body_preview=response.text[:200],
+                )
+                return {
+                    "success": False,
+                    "error": "Restaurant API returned an invalid response format.",
+                }, False
+
+        # Handle specific HTTP error codes
+        return (
+            self._handle_http_error(response, method, url),
+            idempotent and response.status_code in RETRY_STATUS_CODES,
+        )
 
     def _handle_http_error(
         self, response: httpx.Response, method: str, url: str

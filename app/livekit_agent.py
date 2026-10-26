@@ -140,7 +140,8 @@ def build_instruction_text(tenant_name: str, language: str, voice_config: dict |
         f"Keep responses short — 2 to 3 sentences max — since this is a live voice conversation. "
         f"NEVER use markdown formatting (asterisks, dashes, hashes). Write in plain conversational text. "
         f"NEVER make up menu items or prices. Always use check_menu or get_item_details to get real data. "
-        f"IMPORTANT: Before calling check_menu, get_item_details, or get_item_price, ALWAYS first say a brief filler phrase out loud (e.g. 'Let me fetch the latest menu details from this restaurant.' or 'Let me check that for you.') so the customer knows you are fetching live data. Say it ONCE, then call the tool. "
+        f"When you need live data, call check_menu, get_item_details, or get_item_price straight away. "
+        f"Do NOT announce that you are about to look something up — the system plays that line itself if the lookup is slow. "
         f"ALWAYS confirm the order summary with the customer before calling create_order. "
     )
 
@@ -550,9 +551,6 @@ async def entrypoint(ctx: JobContext):
         llm=deepseek_llm,
         tts=tts_plugin,
     )
-
-    # Give tools a reference to the session so they can speak filler phrases
-    tools.set_session(agent_session)
 
     # ── Persist the conversation when the call ends ─────────────
     # The LiveKit path has no per-turn logging (unlike the WebSocket pipeline),

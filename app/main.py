@@ -20,6 +20,7 @@ from app.config import get_settings
 from app.database import close_database, verify_database_connection
 from app.logger import get_logger, setup_logging
 from app.redis_client import close_redis, init_redis, verify_redis_connection
+from app.services.action_router import close_http_client
 
 logger = get_logger(__name__)
 #test
@@ -75,6 +76,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("application_shutting_down")
     await close_database()
     await close_redis()
+    await close_http_client()
     logger.info("application_stopped")
 
 

@@ -27,6 +27,8 @@ import json
 import logging
 import os
 import sys
+import time
+from contextlib import contextmanager
 from datetime import datetime, timezone
 
 # Ensure UTF-8 output on Windows terminals to avoid charmap encoding errors with Indic scripts
@@ -37,7 +39,15 @@ if sys.platform == "win32":
 import re
 
 from dotenv import load_dotenv
-from livekit.agents import AutoSubscribe, JobContext, JobProcess, WorkerOptions, cli, llm
+from livekit.agents import (
+    AutoSubscribe,
+    JobContext,
+    JobProcess,
+    WorkerOptions,
+    cli,
+    llm,
+    metrics,
+)
 from livekit.agents.voice import AgentSession, Agent
 from livekit.plugins import deepgram, openai, sarvam, silero
 
@@ -255,33 +265,64 @@ SARVAM_LANGUAGE_MAP = {
 
 
 def get_stt_plugin(language: str):
-    """Get the appropriate STT plugin for the language."""
-    if language in SARVAM_LANGUAGE_MAP:
+    """
+    Get the appropriate STT plugin for the language.
+
+    English goes to Deepgram, the Indian languages to Sarvam — the same split
+    get_tts_plugin makes. The `language != "english"` guard is load-bearing:
+    "english" is a key in SARVAM_LANGUAGE_MAP (as en-IN), so without it every
+    English call fell through to Sarvam and the Deepgram branch below was
+    unreachable. Measured on one utterance of English, final transcript after
+    end-of-audio: Deepgram nova-3 42-169 ms, Sarvam saaras never finalised
+    within 30 s, because it endpoints with its own server-side VAD on top of
+    the Silero VAD this session already runs.
+
+    Set STT_ENGLISH_ENGINE=sarvam to go back to Sarvam for English — worth
+    trying if Deepgram mishears strongly accented Indian English, which is the
+    one thing Sarvam's en-IN model is better at.
+    """
+    if language in SARVAM_LANGUAGE_MAP and not (
+        language == "english" and os.environ.get("STT_ENGLISH_ENGINE", "deepgram") == "deepgram"
+    ):
         return sarvam.STT(language=SARVAM_LANGUAGE_MAP[language])
     # Default: English via Deepgram
-    return deepgram.STT(model="nova-3", language="en-US")
+    return deepgram.STT(model=os.environ.get("DEEPGRAM_STT_MODEL_NAME", "nova-3"), language="en-US")
 
 
-def get_tts_plugin(language: str, tts_provider: str = "deepgram"):
+def get_tts_plugin(language: str, tts_provider: str = "deepgram", voice_gender: str = "female"):
     """
-    Get the appropriate TTS plugin for the language.
+    Get the appropriate TTS plugin for the language and requested voice.
+
+    voice_gender ("female" default | "male") picks the speaker:
+        - English (Deepgram Aura): female aura-asteria-en, male aura-orion-en.
+          Override per gender with DEEPGRAM_TTS_VOICE / DEEPGRAM_TTS_VOICE_MALE.
+        - Indian languages (Sarvam bulbul): female from SARVAM_TTS_SPEAKER
+          (default "priya"); male from SARVAM_TTS_SPEAKER_MALE. The male env has
+          NO built-in default — Sarvam speaker names must be valid v3 ids, so if
+          it is unset we fall back to the female speaker rather than risk an
+          invalid one. Set SARVAM_TTS_SPEAKER_MALE to a real male v3 speaker to
+          get a male voice for Indian languages.
 
     For English, supports two TTS backends:
-        - "deepgram" (default): Direct Deepgram TTS (aura-asteria-en)
+        - "deepgram" (default): Direct Deepgram TTS
         - "openrouter": Deepgram Flux TTS via OpenRouter
-    For Indian languages: Always uses Sarvam TTS.
     """
+    is_male = voice_gender == "male"
+
     if language in SARVAM_LANGUAGE_MAP and language != "english":
+        female_speaker = os.environ.get("SARVAM_TTS_SPEAKER", "priya")
+        speaker = os.environ.get("SARVAM_TTS_SPEAKER_MALE", female_speaker) if is_male else female_speaker
         return sarvam.TTS(
             target_language_code=SARVAM_LANGUAGE_MAP[language],
             model="bulbul:v3",
-            speaker=os.environ.get("SARVAM_TTS_SPEAKER", "priya"),
+            speaker=speaker,
         )
 
     # English TTS
     if tts_provider == "openrouter":
         tts_model = os.environ.get("DEEPGRAM_TTS_MODEL", "deepgram/flux-tts:free")
-        tts_voice = os.environ.get("DEEPGRAM_TTS_VOICE", "flux-meena-en")
+        female_voice = os.environ.get("DEEPGRAM_TTS_VOICE", "flux-meena-en")
+        tts_voice = os.environ.get("DEEPGRAM_TTS_VOICE_MALE", female_voice) if is_male else female_voice
         return openai.TTS(
             base_url="https://openrouter.ai/api/v1",
             api_key=os.environ.get("OPENROUTER_API_KEY", ""),
@@ -289,8 +330,11 @@ def get_tts_plugin(language: str, tts_provider: str = "deepgram"):
             voice=tts_voice,
         )
     else:
-        # Use Deepgram natively with the voice configured in .env (e.g. flux-priya-en)
-        native_voice = os.environ.get("DEEPGRAM_TTS_VOICE", "aura-asteria-en")
+        # Use Deepgram natively. Aura ships distinct male/female voices.
+        if is_male:
+            native_voice = os.environ.get("DEEPGRAM_TTS_VOICE_MALE", "aura-orion-en")
+        else:
+            native_voice = os.environ.get("DEEPGRAM_TTS_VOICE", "aura-asteria-en")
         return deepgram.TTS(model=native_voice)
 
 
@@ -411,6 +455,25 @@ def prewarm(proc: JobProcess):
     logger.info("VAD model prewarmed")
 
 
+@contextmanager
+def _timed(phase: str):
+    """
+    Time one startup phase and log it as a LATENCY line.
+
+    Same prefix as the per-turn metrics so one `grep LATENCY` over the worker
+    log shows the whole picture: first the call-setup phases below (connect →
+    participant → tenant → tools → session start → greeting), then the per-turn
+    eou/llm/tts/tool lines for every exchange. That is the full path the
+    customer waits on, start to finish, with a number on each leg — so "it feels
+    slow" always resolves to a specific line instead of a guess.
+    """
+    t0 = time.perf_counter()
+    try:
+        yield
+    finally:
+        logger.info(f"LATENCY phase {phase}={(time.perf_counter() - t0) * 1000:.0f}ms")
+
+
 async def entrypoint(ctx: JobContext):
     """
     Main entrypoint — called once per LiveKit room.
@@ -423,10 +486,14 @@ async def entrypoint(ctx: JobContext):
     6. Start the agent session
     7. Speak the initial greeting
     """
-    await ctx.connect(auto_subscribe=AutoSubscribe.AUDIO_ONLY)
+    entry_t0 = time.perf_counter()
+
+    with _timed("room_connect"):
+        await ctx.connect(auto_subscribe=AutoSubscribe.AUDIO_ONLY)
 
     # Wait for the remote participant to join
-    participant = await ctx.wait_for_participant()
+    with _timed("wait_for_participant"):
+        participant = await ctx.wait_for_participant()
 
     # ── Parse metadata ──────────────────────────────────────────
     metadata = {}
@@ -451,13 +518,14 @@ async def entrypoint(ctx: JobContext):
 
     user_lang = metadata.get("language", "english").lower()
     tts_provider = metadata.get("ttsProvider", "deepgram").lower()
+    voice_gender = "male" if metadata.get("voiceGender", "female").lower() == "male" else "female"
     tenant_name = metadata.get("tenant_name", "the restaurant")
     restaurant_id = metadata.get("restaurant_id")
     sub_tenant_id = metadata.get("sub_tenant_id")
 
     logger.info(
         f"Room started — language: {user_lang}, "
-        f"tts_provider: {tts_provider}, "
+        f"tts_provider: {tts_provider}, voice_gender: {voice_gender}, "
         f"tenant_name: {tenant_name}, "
         f"restaurant_id: {restaurant_id}, "
         f"sub_tenant_id: {sub_tenant_id}"
@@ -471,7 +539,8 @@ async def entrypoint(ctx: JobContext):
     except RuntimeError:
         await init_redis()
 
-    tenant = await resolve_tenant_from_metadata(metadata)
+    with _timed("resolve_tenant"):
+        tenant = await resolve_tenant_from_metadata(metadata)
 
     if tenant:
         # Use tenant name from DB
@@ -493,7 +562,7 @@ async def entrypoint(ctx: JobContext):
 
     # ── Configure plugins ───────────────────────────────────────
     stt_plugin = get_stt_plugin(user_lang)
-    tts_plugin = get_tts_plugin(user_lang, tts_provider)
+    tts_plugin = get_tts_plugin(user_lang, tts_provider, voice_gender)
 
     deepseek_llm = openai.LLM(
         base_url=os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1"),
@@ -521,7 +590,8 @@ async def entrypoint(ctx: JobContext):
     # Which tools this tenant has enabled, straight from its dashboard config.
     # None — no tenant, or the lookup failed — leaves RestaurantTools on the
     # built-in restaurant set.
-    tool_specs = await load_tenant_tool_specs(str(tenant.id)) if tenant else None
+    with _timed("load_tool_specs"):
+        tool_specs = await load_tenant_tool_specs(str(tenant.id)) if tenant else None
 
     # One session id for every row this call writes — order events during the
     # call and the conversation log at the end. The room name is unique per
@@ -545,15 +615,103 @@ async def entrypoint(ctx: JobContext):
         tools=[tools],
     )
 
+    # Endpointing is pure dead air: the gap between the customer finishing a
+    # sentence and the agent accepting the turn. The SDK default is 0.5 s, which
+    # is tuned for a semantic end-of-turn model; with plain Silero VAD, as here,
+    # it is simply a fixed wait. 0.4 s trims it without making the agent cut
+    # people off mid-pause — lower it further only while watching the
+    # LATENCY eou lines above, and see the note in docs about installing
+    # livekit-plugins-turn-detector if sub-300 ms is wanted.
+    #
+    # preemptive_tts starts synthesising as soon as the LLM emits tokens rather
+    # than waiting for the speech to be scheduled for playout, which hides the
+    # whole TTS first-byte cost behind the LLM — worth ~0.24 s on warm Deepgram
+    # and ~1.0 s on Sarvam, whose first byte is slow on every request.
     agent_session = AgentSession(
         vad=ctx.proc.userdata["vad"],
         stt=stt_plugin,
         llm=deepseek_llm,
         tts=tts_plugin,
+        turn_handling={
+            "endpointing": {
+                "min_delay": float(os.environ.get("ENDPOINTING_MIN_DELAY", "0.4")),
+                "max_delay": float(os.environ.get("ENDPOINTING_MAX_DELAY", "2.5")),
+            },
+            "preemptive_generation": {"enabled": True, "preemptive_tts": True},
+        },
     )
 
+    # ── Live turn-by-turn logging ───────────────────────────────
+    # _persist_conversation only writes the transcript at shutdown, which is no
+    # use while watching a live call. These two handlers mirror each turn to the
+    # worker log as it happens, so `docker logs -f` reads like a transcript. The
+    # TRANSCRIPT prefix is there to grep cleanly out of the SDK's own chatter.
+    # Both callbacks must be sync — the SDK does not await event handlers.
+
+    @agent_session.on("user_input_transcribed")
+    def _log_user_turn(ev) -> None:
+        if ev.is_final:
+            logger.info(f"TRANSCRIPT user : {ev.transcript}")
+
+    @agent_session.on("conversation_item_added")
+    def _log_agent_turn(ev) -> None:
+        if getattr(ev.item, "role", None) == "assistant":
+            logger.info(f"TRANSCRIPT agent: {ev.item.text_content}")
+
+    # ── Per-stage latency ───────────────────────────────────────
+    # Without this, "the agent feels slow" is untestable: the four stages of a
+    # turn sit behind three different vendors and the time could be in any of
+    # them. The SDK already times each one, so we just write them out, prefixed
+    # LATENCY to grep out of the SDK's chatter:
+    #
+    #   eou  — silence after the customer stops talking before the turn is
+    #          declared over, plus how long the final transcript lagged. Mostly
+    #          the endpointing min_delay below, and STT finalisation.
+    #   llm  — time to first token. Measured at 2.1-5.6 s on gpt-6-luna and
+    #          ~1.2 s on the small models; reasoning_tokens says whether the
+    #          model is thinking before it answers.
+    #   tts  — time to first audio byte. ~0.24 s on warm Deepgram Aura, ~1.0 s
+    #          on Sarvam bulbul.
+    #
+    # A turn that calls a tool pays the llm cost twice, once to pick the tool
+    # and once to word the answer, so llm is the number to watch.
+    @agent_session.on("metrics_collected")
+    def _log_latency(ev) -> None:
+        m = ev.metrics
+        if isinstance(m, metrics.EOUMetrics):
+            logger.info(
+                f"LATENCY eou  end_of_utterance={m.end_of_utterance_delay * 1000:.0f}ms "
+                f"transcription={m.transcription_delay * 1000:.0f}ms"
+            )
+        elif isinstance(m, metrics.LLMMetrics):
+            if not m.cancelled:
+                logger.info(
+                    f"LATENCY llm  ttft={m.ttft * 1000:.0f}ms "
+                    f"total={m.duration * 1000:.0f}ms "
+                    f"prompt_tokens={m.prompt_tokens} "
+                    f"reasoning_tokens={m.reasoning_tokens}"
+                )
+        elif isinstance(m, metrics.TTSMetrics):
+            if not m.cancelled:
+                logger.info(
+                    f"LATENCY tts  ttfb={m.ttfb * 1000:.0f}ms "
+                    f"audio={m.audio_duration * 1000:.0f}ms "
+                    f"conn_reused={m.connection_reused}"
+                )
+        elif isinstance(m, metrics.STTMetrics):
+            # Streaming STT (the normal case) reports duration=0 because the
+            # transcript lands incrementally; the real finalisation cost shows up
+            # in the eou line's transcription_delay. This line still matters for
+            # the non-streaming fallback and for spotting a slow STT connection.
+            logger.info(
+                f"LATENCY stt  duration={m.duration * 1000:.0f}ms "
+                f"audio={m.audio_duration * 1000:.0f}ms "
+                f"streamed={m.streamed}"
+            )
+
     # ── Persist the conversation when the call ends ─────────────
-    # The LiveKit path has no per-turn logging (unlike the WebSocket pipeline),
+    # The LiveKit path has no per-turn database logging (unlike the WebSocket
+    # pipeline),
     # so we capture the whole call once, at shutdown: pull the final transcript
     # from the session history and write a single conversation_logs row with the
     # outcome the tools tracked. Registered before start so an early hangup is
@@ -600,8 +758,9 @@ async def entrypoint(ctx: JobContext):
     ctx.add_shutdown_callback(_persist_conversation)
 
     # ── Start ───────────────────────────────────────────────────
-    await agent_session.start(agent, room=ctx.room)
-    
+    with _timed("session_start"):
+        await agent_session.start(agent, room=ctx.room)
+
     # Send the LLM instructions to the frontend for Debug Mode
     try:
         debug_payload = json.dumps({
@@ -613,7 +772,13 @@ async def entrypoint(ctx: JobContext):
     except Exception as e:
         logger.error(f"Failed to publish debug data: {e}")
 
-    await agent_session.say(initial_greeting, allow_interruptions=True)
+    with _timed("greeting_say"):
+        await agent_session.say(initial_greeting, allow_interruptions=True)
+
+    logger.info(
+        f"LATENCY phase total_setup={(time.perf_counter() - entry_t0) * 1000:.0f}ms "
+        f"(connect → first greeting spoken)"
+    )
 
     logger.info(
         f"Agent session started in room {ctx.room.name} — "

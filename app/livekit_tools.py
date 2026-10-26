@@ -21,6 +21,7 @@ restaurant_id, and room instances into the tools without relying on global state
 
 import json
 import logging
+import time
 from contextlib import nullcontext
 from typing import Any, Sequence
 
@@ -243,6 +244,12 @@ class RestaurantTools(llm.Toolset):
         )
 
         try:
+            # Time the restaurant API round-trip on its own. This is the leg the
+            # HTTP connection pooling was meant to speed up, so it needs its own
+            # LATENCY line to show whether the pool is actually being reused
+            # (look at _response_time_ms in the result) or whether a slow
+            # restaurant API — not our stack — is the thing the customer waits on.
+            tool_t0 = time.perf_counter()
             async with filler:
                 result = await router.execute(
                     function_name=function_name,
@@ -251,6 +258,12 @@ class RestaurantTools(llm.Toolset):
                     restaurant_id=self.restaurant_id,
                     tools=self._specs,
                 )
+            logger.info(
+                "LATENCY tool %s=%.0fms (api_reported=%sms)",
+                function_name,
+                (time.perf_counter() - tool_t0) * 1000,
+                result.get("_response_time_ms", "?"),
+            )
 
             await broadcast_debug("tool_result", {"function": function_name, "result": result})
 

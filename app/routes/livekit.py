@@ -52,6 +52,10 @@ class LiveKitTokenRequest(BaseModel):
         default="deepgram",
         description="TTS provider preference for English (deepgram or openrouter).",
     )
+    voice_gender: str = Field(
+        default="female",
+        description="Agent voice to speak with: 'female' (default) or 'male'.",
+    )
     restaurant_id: str | None = Field(
         default=None,
         description=(
@@ -111,12 +115,15 @@ async def generate_livekit_token(
         4. Return the token + room name + LiveKit URL
     """
     settings = get_settings()
+    handler_t0 = time.perf_counter()
 
     # Resolve and VALIDATE the sub-tenant before issuing a token. The header
     # (handled in get_tenant_context) wins; otherwise fall back to the body.
     # This raises 401 for an unknown slug, a slug belonging to another account,
     # or a missing slug on a multi-tenant account.
+    subtenant_t0 = time.perf_counter()
     await context.attach_sub_tenant(payload.sub_tenant_id or payload.restaurant_id)
+    subtenant_ms = (time.perf_counter() - subtenant_t0) * 1000
 
     tenant = context.tenant
     config = context.display_config
@@ -144,6 +151,7 @@ async def generate_livekit_token(
         "upi_id": config.get("upi_id"),
         "language": payload.language,
         "ttsProvider": payload.tts_provider,
+        "voiceGender": "male" if payload.voice_gender.lower() == "male" else "female",
     })
 
     try:
@@ -200,6 +208,15 @@ async def generate_livekit_token(
         language=payload.language,
         restaurant_id=context.restaurant_id,
         sub_tenant_id=str(context.sub_tenant_id) if context.sub_tenant_id else None,
+    )
+
+    # The customer's very first wait: the widget blocks on this POST before it
+    # can even join the room. attach_sub_tenant hits the DB/redis, so it is
+    # called out separately from the total.
+    logger.info(
+        "LATENCY token_mint total=%.0fms (subtenant_resolve=%.0fms)",
+        (time.perf_counter() - handler_t0) * 1000,
+        subtenant_ms,
     )
 
     return LiveKitTokenResponse(

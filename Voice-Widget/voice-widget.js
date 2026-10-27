@@ -59,7 +59,7 @@
     // data-sub-tenant-id is the current name; data-restaurant-id is the older
     // one and still honoured so existing embeds keep working.
     subTenantId:  attr("data-sub-tenant-id") || attr("data-restaurant-id"),
-    language:     attr("data-language") || "en",
+    language:     attr("data-language") || "",
     primaryColor: attr("data-primary-color") || "#6C63FF",
     position:     attr("data-position") || "bottom-right",
     wsHost:       attr("data-ws-host")
@@ -639,7 +639,10 @@
       },
       body: JSON.stringify({
         participant_name: "web-caller",
-        language: LANG_NAMES[language] || language,
+        // Only send a language when one was explicitly chosen (data-language or
+        // the in-call switcher). When omitted, the backend uses the tenant's
+        // dashboard Voice Config language.
+        ...(language ? { language: LANG_NAMES[language] || language } : {}),
         // Sent under both names: the platform prefers sub_tenant_id and falls
         // back to restaurant_id, and older builds only know the latter.
         sub_tenant_id: CONFIG.subTenantId || undefined,

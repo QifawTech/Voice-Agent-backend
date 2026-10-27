@@ -379,8 +379,19 @@ def get_tts_plugin(
             native_voice = os.environ.get("DEEPGRAM_TTS_VOICE_MALE", "aura-orion-en")
         else:
             native_voice = os.environ.get("DEEPGRAM_TTS_VOICE", "aura-asteria-en")
-        logger.info(f"TTS resolved — provider: deepgram, model: {native_voice!r}, speed: {pace} (requested voice: {voice!r})")
-        return deepgram.TTS(model=native_voice, speed=pace)
+        # Deepgram's `speed` param is ONLY valid on Aura-2 voices (aura-2-*).
+        # Sending it to an Aura-1 voice like aura-asteria-en returns HTTP 400,
+        # which kills TTS entirely. Only pass it when the voice supports it and
+        # the pace is actually non-default.
+        dg_kwargs = {"model": native_voice}
+        if abs(pace - 1.0) > 1e-6 and native_voice.startswith("aura-2"):
+            dg_kwargs["speed"] = pace
+        logger.info(
+            f"TTS resolved — provider: deepgram, model: {native_voice!r}, "
+            f"speed: {dg_kwargs.get('speed', 'default (unsupported on this voice)')} "
+            f"(requested voice: {voice!r})"
+        )
+        return deepgram.TTS(**dg_kwargs)
 
 
 # ──────────────────────────────────────────────────────────────

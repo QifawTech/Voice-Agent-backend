@@ -130,6 +130,56 @@ LANGUAGE_RULES: dict[str, str] = {
 }
 
 
+# ──────────────────────────────────────────────────────────────
+# Per-language custom prompts
+# ──────────────────────────────────────────────────────────────
+# Tenants can write their own greeting + instructions for each language from
+# the dashboard. These live in voice_config["prompts"], keyed by the lowercased
+# language name:
+#
+#   voice_config["prompts"] = {
+#       "english": {"greeting": "...", "instructions": "..."},
+#       "tamil":   {"greeting": "...", "instructions": "..."},
+#   }
+#
+# We currently let tenants edit prompts for these languages only. The agent can
+# still *run* in any language — unlisted ones just fall back to the defaults.
+# ──────────────────────────────────────────────────────────────
+
+SUPPORTED_PROMPT_LANGUAGES = ("english", "tamil")
+
+
+def resolve_language_config(voice_config: dict | None, language: str) -> dict:
+    """
+    Pull a tenant's custom prompt + greeting for a given language.
+
+    Reads voice_config["prompts"][<language>] and falls back to the flat legacy
+    ``greeting`` field (which applied to every language) so tenants configured
+    before this feature keep working unchanged.
+
+    Args:
+        voice_config: The tenant's voice_config dict (or None).
+        language: Runtime language name, e.g. "english" or "Tamil".
+
+    Returns:
+        {"instructions": str, "greeting": str} — empty strings when unset.
+    """
+    voice_config = voice_config or {}
+    key = (language or "english").lower().strip()
+
+    prompts = voice_config.get("prompts") or {}
+    entry = prompts.get(key) or {}
+
+    instructions = (entry.get("instructions") or "").strip()
+    greeting = (entry.get("greeting") or "").strip()
+
+    # Legacy fallback: a single flat greeting that applied to all languages.
+    if not greeting:
+        greeting = (voice_config.get("greeting") or "").strip()
+
+    return {"instructions": instructions, "greeting": greeting}
+
+
 class PromptBuilder:
     """
     Builds personalized system prompts for DeepSeek based on tenant configuration.
@@ -170,10 +220,24 @@ class PromptBuilder:
         voice_config = self._get_field(tenant, "voice_config", {}) or {}
 
         # Extract voice configuration
-        greeting = voice_config.get("greeting", "")
         language = voice_config.get("language", "English")
         tone = voice_config.get("tone", "friendly and professional")
         extra_instructions = voice_config.get("extra_instructions", "")
+
+        # Resolve the tenant's per-language custom greeting + instructions
+        # (falls back to the legacy flat greeting for older tenants).
+        lang_cfg = resolve_language_config(voice_config, language)
+        greeting = lang_cfg["greeting"]
+        custom_instructions = lang_cfg["instructions"]
+
+        # A per-language custom prompt controls how the agent talks; the
+        # mandatory ordering/TTS/tool rules below are always kept on top of it.
+        if custom_instructions:
+            extra_instructions = (
+                f"{custom_instructions}\n\n{extra_instructions}".strip()
+                if extra_instructions
+                else custom_instructions
+            )
 
         # Build custom greeting section
         custom_greeting = ""

@@ -136,17 +136,30 @@ def build_instruction_text(tenant_name: str, language: str, voice_config: dict |
     Uses the same guidelines as PromptBuilder but in a format suited
     for LiveKit's Agent(instructions=...) parameter.
     """
+    from app.services.prompt_builder import resolve_language_config
+
     voice_config = voice_config or {}
     tone = voice_config.get("tone", "friendly and professional")
     extra = voice_config.get("extra_instructions", "")
 
-    instruction = (
+    # A tenant can paste their own instructions per language from the dashboard.
+    # When set, it replaces the default persona/role below — but the mandatory
+    # ordering, TTS, and tool-calling rules are ALWAYS appended so ordering and
+    # the voice engine keep working no matter what the tenant wrote.
+    custom_instructions = resolve_language_config(voice_config, language)["instructions"]
+
+    persona = custom_instructions or (
         f"You are a friendly and helpful voice ordering assistant for {tenant_name}. "
         f"Help customers browse the menu, ask about items, and place orders. "
-        f"Be warm, conversational, and efficient. Keep responses concise since they will be spoken aloud. "
-        f"Always confirm order details (items, quantities, special instructions) before placing an order. "
+        f"Be warm, conversational, and efficient. "
         f"If a customer is unsure, suggest popular items or ask about their preferences. "
-        f"Use a {tone} tone. "
+        f"Use a {tone} tone."
+    )
+
+    # Mandatory rules — always applied, on top of any custom persona.
+    plumbing = (
+        f"Keep responses concise since they will be spoken aloud. "
+        f"Always confirm order details (items, quantities, special instructions) before placing an order. "
         f"Keep responses short — 2 to 3 sentences max — since this is a live voice conversation. "
         f"NEVER use markdown formatting (asterisks, dashes, hashes). Write in plain conversational text. "
         f"NEVER make up menu items or prices. Always use check_menu or get_item_details to get real data. "
@@ -154,6 +167,8 @@ def build_instruction_text(tenant_name: str, language: str, voice_config: dict |
         f"Do NOT announce that you are about to look something up — the system plays that line itself if the lookup is slow. "
         f"ALWAYS confirm the order summary with the customer before calling create_order. "
     )
+
+    instruction = f"{persona.strip()} {plumbing}"
 
     # Language-specific instructions
     # Dish names must be phonetically transliterated to local script so the
@@ -229,13 +244,15 @@ def build_instruction_text(tenant_name: str, language: str, voice_config: dict |
 
 def build_initial_greeting(tenant_name: str, language: str, participant_name: str = "", voice_config: dict | None = None) -> str:
     """Build the initial greeting the agent speaks when a customer connects."""
+    from app.services.prompt_builder import resolve_language_config
+
     voice_config = voice_config or {}
-    # Note: Custom greetings from voice_config are ignored in favor of
-    # the dynamic greeting that includes participant name and tenant name.
-    # To re-enable, uncomment the lines below:
-    # custom_greeting = voice_config.get("greeting", "")
-    # if custom_greeting:
-    #     return custom_greeting
+
+    # A tenant-authored greeting for this language wins — it's what they typed
+    # into the dashboard and expect callers to hear.
+    custom_greeting = resolve_language_config(voice_config, language)["greeting"]
+    if custom_greeting:
+        return custom_greeting
 
     name_part = f" {participant_name}" if participant_name else ""
 
@@ -289,40 +306,65 @@ def get_stt_plugin(language: str):
     return deepgram.STT(model=os.environ.get("DEEPGRAM_STT_MODEL_NAME", "nova-3"), language="en-US")
 
 
-def get_tts_plugin(language: str, tts_provider: str = "deepgram", voice_gender: str = "female"):
+def get_tts_plugin(
+    language: str,
+    tts_provider: str = "deepgram",
+    voice_gender: str = "female",
+    voice: str | None = None,
+    pace: float = 1.0,
+):
     """
     Get the appropriate TTS plugin for the language and requested voice.
 
-    voice_gender ("female" default | "male") picks the speaker:
+    `pace` (default 1.0) controls speaking speed: 1.0 is normal, below 1.0 is
+    slower, above 1.0 is faster. It maps to Sarvam's `pace` for Indian languages
+    and Deepgram's `speed` for English. Valid range is 0.5–2.0 (bulbul:v3);
+    the caller is expected to clamp it.
+
+    `voice` (optional) is an explicit, provider-specific voice id the tenant
+    picked in the dashboard — a Sarvam bulbul:v3 speaker (e.g. "priya") for an
+    Indian language, or a Deepgram Aura model (e.g. "aura-luna-en") for English.
+    When given it is used verbatim and wins over voice_gender. The caller is
+    responsible for sending a voice valid for the language (the dashboard only
+    offers each language its own voices).
+
+    When no explicit voice is given, voice_gender ("female" | "male") picks a
+    sensible default:
         - English (Deepgram Aura): female aura-asteria-en, male aura-orion-en.
           Override per gender with DEEPGRAM_TTS_VOICE / DEEPGRAM_TTS_VOICE_MALE.
-        - Indian languages (Sarvam bulbul): female from SARVAM_TTS_SPEAKER
-          (default "priya"); male from SARVAM_TTS_SPEAKER_MALE. The male env has
-          NO built-in default — Sarvam speaker names must be valid v3 ids, so if
-          it is unset we fall back to the female speaker rather than risk an
-          invalid one. Set SARVAM_TTS_SPEAKER_MALE to a real male v3 speaker to
-          get a male voice for Indian languages.
+        - Indian languages (Sarvam bulbul): female from SARVAM_TTS_SPEAKER;
+          male from SARVAM_TTS_SPEAKER_MALE (no built-in default — falls back to
+          the female speaker rather than risk an invalid id).
 
     For English, supports two TTS backends:
         - "deepgram" (default): Direct Deepgram TTS
         - "openrouter": Deepgram Flux TTS via OpenRouter
     """
     is_male = voice_gender == "male"
+    voice = (voice or "").strip() or None
 
     if language in SARVAM_LANGUAGE_MAP and language != "english":
-        female_speaker = os.environ.get("SARVAM_TTS_SPEAKER", "priya")
-        speaker = os.environ.get("SARVAM_TTS_SPEAKER_MALE", female_speaker) if is_male else female_speaker
+        if voice:
+            speaker = voice
+        else:
+            female_speaker = os.environ.get("SARVAM_TTS_SPEAKER", "priya")
+            speaker = os.environ.get("SARVAM_TTS_SPEAKER_MALE", female_speaker) if is_male else female_speaker
+        logger.info(f"TTS resolved — provider: sarvam, language: {language}, speaker: {speaker!r}, pace: {pace} (requested voice: {voice!r})")
         return sarvam.TTS(
             target_language_code=SARVAM_LANGUAGE_MAP[language],
             model="bulbul:v3",
             speaker=speaker,
+            pace=pace,
         )
 
     # English TTS
     if tts_provider == "openrouter":
         tts_model = os.environ.get("DEEPGRAM_TTS_MODEL", "deepgram/flux-tts:free")
-        female_voice = os.environ.get("DEEPGRAM_TTS_VOICE", "flux-meena-en")
-        tts_voice = os.environ.get("DEEPGRAM_TTS_VOICE_MALE", female_voice) if is_male else female_voice
+        if voice:
+            tts_voice = voice
+        else:
+            female_voice = os.environ.get("DEEPGRAM_TTS_VOICE", "flux-meena-en")
+            tts_voice = os.environ.get("DEEPGRAM_TTS_VOICE_MALE", female_voice) if is_male else female_voice
         return openai.TTS(
             base_url="https://openrouter.ai/api/v1",
             api_key=os.environ.get("OPENROUTER_API_KEY", ""),
@@ -331,11 +373,14 @@ def get_tts_plugin(language: str, tts_provider: str = "deepgram", voice_gender: 
         )
     else:
         # Use Deepgram natively. Aura ships distinct male/female voices.
-        if is_male:
+        if voice:
+            native_voice = voice
+        elif is_male:
             native_voice = os.environ.get("DEEPGRAM_TTS_VOICE_MALE", "aura-orion-en")
         else:
             native_voice = os.environ.get("DEEPGRAM_TTS_VOICE", "aura-asteria-en")
-        return deepgram.TTS(model=native_voice)
+        logger.info(f"TTS resolved — provider: deepgram, model: {native_voice!r}, speed: {pace} (requested voice: {voice!r})")
+        return deepgram.TTS(model=native_voice, speed=pace)
 
 
 # ──────────────────────────────────────────────────────────────
@@ -519,6 +564,13 @@ async def entrypoint(ctx: JobContext):
     user_lang = metadata.get("language", "english").lower()
     tts_provider = metadata.get("ttsProvider", "deepgram").lower()
     voice_gender = "male" if metadata.get("voiceGender", "female").lower() == "male" else "female"
+    voice = metadata.get("voice") or None
+    try:
+        pace = float(metadata.get("pace") or 1.0)
+    except (TypeError, ValueError):
+        pace = 1.0
+    # Keep within the range bulbul:v3 accepts so a bad value can't break TTS.
+    pace = max(0.5, min(2.0, pace))
     tenant_name = metadata.get("tenant_name", "the restaurant")
     restaurant_id = metadata.get("restaurant_id")
     sub_tenant_id = metadata.get("sub_tenant_id")
@@ -526,6 +578,7 @@ async def entrypoint(ctx: JobContext):
     logger.info(
         f"Room started — language: {user_lang}, "
         f"tts_provider: {tts_provider}, voice_gender: {voice_gender}, "
+        f"voice: {voice!r}, pace: {pace}, "
         f"tenant_name: {tenant_name}, "
         f"restaurant_id: {restaurant_id}, "
         f"sub_tenant_id: {sub_tenant_id}"
@@ -562,12 +615,22 @@ async def entrypoint(ctx: JobContext):
 
     # ── Configure plugins ───────────────────────────────────────
     stt_plugin = get_stt_plugin(user_lang)
-    tts_plugin = get_tts_plugin(user_lang, tts_provider, voice_gender)
+    tts_plugin = get_tts_plugin(user_lang, tts_provider, voice_gender, voice, pace)
+
+    # Disable the model's "thinking" tokens. On a voice turn every reasoning
+    # token is dead air before the first word, and we saw ~160 of them per
+    # answer on claude-haiku-5.5. OpenRouter's unified `reasoning` body param
+    # turns it off for any provider that supports it; harmless for models that
+    # don't reason. Toggle with LLM_REASONING=on in .env if ever needed.
+    extra_body = {}
+    if os.environ.get("LLM_REASONING", "off").lower() != "on":
+        extra_body["reasoning"] = {"enabled": False}
 
     deepseek_llm = openai.LLM(
         base_url=os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1"),
         api_key=os.environ.get("DEEPSEEK_API_KEY", ""),
         model=os.environ.get("DEEPSEEK_MODEL", "deepseek-chat"),
+        extra_body=extra_body,
     )
 
     # ── Build prompts ───────────────────────────────────────────

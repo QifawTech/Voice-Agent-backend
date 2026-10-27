@@ -44,17 +44,45 @@ class LiveKitTokenRequest(BaseModel):
         description="Display name for the participant in the LiveKit room.",
         max_length=100,
     )
-    language: str = Field(
-        default="english",
-        description="Preferred language for the voice conversation (english, telugu, tamil, kannada, malayalam).",
+    language: str | None = Field(
+        default=None,
+        description=(
+            "Preferred language for the voice conversation (english, telugu, tamil, "
+            "kannada, malayalam). When omitted, the tenant's configured default "
+            "language (voice_config.language) is used, falling back to english."
+        ),
     )
     tts_provider: str = Field(
         default="deepgram",
         description="TTS provider preference for English (deepgram or openrouter).",
     )
-    voice_gender: str = Field(
-        default="female",
-        description="Agent voice to speak with: 'female' (default) or 'male'.",
+    voice_gender: str | None = Field(
+        default=None,
+        description=(
+            "Agent voice to speak with: 'female' or 'male'. When omitted, the "
+            "tenant's configured default (voice_config.voice_gender) is used, "
+            "falling back to 'female'. Ignored when an explicit `voice` is set."
+        ),
+    )
+    voice: str | None = Field(
+        default=None,
+        description=(
+            "Explicit TTS voice id for the chosen language — a Sarvam bulbul:v3 "
+            "speaker (e.g. 'priya') for Indian languages, or a Deepgram Aura "
+            "model (e.g. 'aura-luna-en') for English. When omitted, the tenant's "
+            "configured voice for that language (voice_config.voices[language]) "
+            "is used, else the voice_gender default."
+        ),
+    )
+    pace: float | None = Field(
+        default=None,
+        ge=0.5,
+        le=2.0,
+        description=(
+            "Speaking pace (speed): 1.0 is normal, below 1.0 slower, above 1.0 "
+            "faster. Range 0.5–2.0. When omitted, the tenant's configured pace "
+            "(voice_config.pace) is used, else 1.0."
+        ),
     )
     restaurant_id: str | None = Field(
         default=None,
@@ -128,6 +156,36 @@ async def generate_livekit_token(
     tenant = context.tenant
     config = context.display_config
 
+    # Resolve the language to speak. An explicit value from the caller (e.g. the
+    # widget's data-language or the in-call switcher) wins; otherwise fall back
+    # to the tenant's configured default (set in the dashboard Voice Config tab),
+    # and finally to english.
+    tenant_voice_config = config.get("voice_config") or {}
+    tenant_default_language = tenant_voice_config.get("language")
+    effective_language = (payload.language or tenant_default_language or "english").lower()
+
+    # Same precedence for the voice: explicit request wins, else the tenant's
+    # configured default, else female.
+    tenant_default_voice = tenant_voice_config.get("voice_gender")
+    effective_voice_gender = (
+        "male"
+        if (payload.voice_gender or tenant_default_voice or "female").lower() == "male"
+        else "female"
+    )
+
+    # Explicit named voice for this language: caller's choice wins, else the
+    # tenant's configured per-language voice (voice_config.voices[language]).
+    tenant_voices = tenant_voice_config.get("voices") or {}
+    effective_voice = payload.voice or tenant_voices.get(effective_language)
+
+    # Speaking pace: explicit request wins, else the tenant's configured pace,
+    # else 1.0 (normal). Clamped to the range bulbul:v3 accepts.
+    try:
+        raw_pace = payload.pace if payload.pace is not None else tenant_voice_config.get("pace", 1.0)
+        effective_pace = max(0.5, min(2.0, float(raw_pace)))
+    except (TypeError, ValueError):
+        effective_pace = 1.0
+
     # Generate room name
     room_name = payload.room or f"voice-{tenant.id}-{int(time.time())}-{uuid.uuid4().hex[:6]}"
 
@@ -149,9 +207,11 @@ async def generate_livekit_token(
         "display_name": config.get("name"),
         "voice_config": config.get("voice_config") or {},
         "upi_id": config.get("upi_id"),
-        "language": payload.language,
+        "language": effective_language,
         "ttsProvider": payload.tts_provider,
-        "voiceGender": "male" if payload.voice_gender.lower() == "male" else "female",
+        "voiceGender": effective_voice_gender,
+        "voice": effective_voice,
+        "pace": effective_pace,
     })
 
     try:
@@ -205,7 +265,7 @@ async def generate_livekit_token(
         tenant_name=tenant.name,
         room=room_name,
         participant=participant_identity,
-        language=payload.language,
+        language=effective_language,
         restaurant_id=context.restaurant_id,
         sub_tenant_id=str(context.sub_tenant_id) if context.sub_tenant_id else None,
     )

@@ -36,6 +36,17 @@ logger = get_logger(__name__)
 TENANT_CACHE_PREFIX = "tenant_config:"
 TENANT_CACHE_TTL = 300  # 5 minutes
 
+# Full language name (as stored in voice_config.language) → the short code the
+# embed widget expects in its data-language attribute. See voice-widget.js.
+_WIDGET_LANG_CODES = {
+    "english": "en",
+    "tamil": "ta",
+    "telugu": "te",
+    "kannada": "kn",
+    "malayalam": "ml",
+    "hindi": "hi",
+}
+
 
 class TenantService:
     """
@@ -537,6 +548,36 @@ class TenantService:
             else ""
         )
 
+        # Default language — set in the dashboard Voice Config tab and emitted as
+        # the widget's short data-language code so new installs speak it out of the
+        # box. A sub-tenant's own voice_config wins, else the parent's, else english.
+        voice_config = (
+            (sub_tenant.voice_config if sub_tenant is not None else None)
+            or tenant.voice_config
+            or {}
+        )
+        language_full = str(voice_config.get("language") or "english").lower()
+        lang_short = _WIDGET_LANG_CODES.get(language_full, "en")
+        lang_line = f'  data-language="{lang_short}"\n'
+
+        # Default voice (female | male), also set in the Voice Config tab.
+        voice_gender = "male" if str(voice_config.get("voice_gender") or "").lower() == "male" else "female"
+        voice_line = f'  data-voice-gender="{voice_gender}"\n'
+
+        # Specific named voice for the default language, if the tenant picked one
+        # (Sarvam speaker or Deepgram Aura id). Overrides the gender default.
+        chosen_voice = (voice_config.get("voices") or {}).get(language_full)
+        named_voice_line = f'  data-voice="{chosen_voice}"\n' if chosen_voice else ""
+
+        # Speaking pace, only emitted when the tenant set a non-default value.
+        pace_line = ""
+        try:
+            pace_val = float(voice_config.get("pace"))
+            if abs(pace_val - 1.0) > 1e-6:
+                pace_line = f'  data-pace="{max(0.5, min(2.0, pace_val))}"\n'
+        except (TypeError, ValueError):
+            pace_line = ""
+
         embed_code = (
             f'<!-- Voice Agent Widget -->\n'
             f'<script\n'
@@ -545,6 +586,10 @@ class TenantService:
             f'  data-api-key="{tenant.widget_api_key}"\n'
             f'{sub_line}'
             f'  data-restaurant-name="{display_name}"\n'
+            f'{lang_line}'
+            f'{voice_line}'
+            f'{named_voice_line}'
+            f'{pace_line}'
             f'  data-theme="dark"\n'
             f'  async\n'
             f'></script>'

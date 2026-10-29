@@ -323,6 +323,9 @@ class SpeechService:
         self,
         text: str,
         language: str = DEFAULT_LANGUAGE,
+        provider: str | None = None,
+        voice_id: str | None = None,
+        model: str | None = None,
     ) -> bytes:
         """
         Convert text to speech audio using the appropriate provider.
@@ -330,6 +333,12 @@ class SpeechService:
         Args:
             text: Text to convert to speech.
             language: Language code ("en", "ta", "te", "kn", "ml").
+            provider: Optional provider override. "elevenlabs" uses ElevenLabs
+                for ANY language (its models are multilingual), bypassing the
+                language-based Deepgram/Sarvam routing. When None, the provider
+                is chosen from the language as before.
+            voice_id: ElevenLabs voice id (only used when provider="elevenlabs").
+            model: ElevenLabs model id (only used when provider="elevenlabs").
 
         Returns:
             Audio bytes (MP3 format).
@@ -345,7 +354,8 @@ class SpeechService:
             )
 
         config = LANGUAGE_CONFIG[language]
-        provider = config["provider"]
+        # An explicit ElevenLabs override wins over the language-based provider.
+        provider = (provider or config["provider"]).lower()
 
         logger.info(
             "tts_request",
@@ -355,7 +365,9 @@ class SpeechService:
         )
 
         try:
-            if provider == "deepgram":
+            if provider == "elevenlabs":
+                audio = await self._elevenlabs_tts(text, voice_id, model)
+            elif provider == "deepgram":
                 audio = await self._deepgram_tts(text)
             else:
                 audio = await self._sarvam_tts(text, config["sarvam_code"])
@@ -525,6 +537,71 @@ class SpeechService:
             raise SpeechServiceError(
                 "Sarvam returned empty or invalid audio",
                 provider="sarvam",
+            )
+
+        return audio_data
+
+    async def _elevenlabs_tts(
+        self,
+        text: str,
+        voice_id: str | None = None,
+        model: str | None = None,
+    ) -> bytes:
+        """
+        Generate speech from text using ElevenLabs (direct API).
+
+        ElevenLabs is multilingual, so one voice id serves every language — the
+        caller passes the tenant's configured voice_id/model, falling back to
+        the server defaults (ELEVENLABS_VOICE_ID / ELEVENLABS_MODEL).
+
+        Endpoint: POST https://api.elevenlabs.io/v1/text-to-speech/{voice_id}
+        Auth: xi-api-key header
+        Returns: MP3 bytes (audio/mpeg).
+        """
+        client = await self._get_client()
+
+        api_key = (getattr(self.settings, "ELEVENLABS_API_KEY", "") or "").strip()
+        if not api_key or api_key == "placeholder":
+            raise SpeechServiceError(
+                "ElevenLabs is not configured (ELEVENLABS_API_KEY missing).",
+                provider="elevenlabs",
+            )
+
+        voice = (voice_id or "").strip() or getattr(
+            self.settings, "ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM"
+        )
+        model_id = (model or "").strip() or getattr(
+            self.settings, "ELEVENLABS_MODEL", "eleven_multilingual_v2"
+        )
+
+        response = await client.post(
+            f"https://api.elevenlabs.io/v1/text-to-speech/{voice}",
+            params={"output_format": "mp3_44100_128"},
+            headers={
+                "xi-api-key": api_key,
+                "Content-Type": "application/json",
+                "Accept": "audio/mpeg",
+            },
+            json={"text": text, "model_id": model_id},
+        )
+
+        if response.status_code != 200:
+            error_text = response.text
+            logger.error(
+                "elevenlabs_tts_api_error",
+                status=response.status_code,
+                error=error_text[:500],
+            )
+            raise SpeechServiceError(
+                f"ElevenLabs TTS failed (HTTP {response.status_code}): {error_text[:200]}",
+                provider="elevenlabs",
+            )
+
+        audio_data = response.content
+        if not audio_data or len(audio_data) < 100:
+            raise SpeechServiceError(
+                "ElevenLabs returned empty or invalid audio",
+                provider="elevenlabs",
             )
 
         return audio_data

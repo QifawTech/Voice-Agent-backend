@@ -60,6 +60,16 @@ class Settings(BaseSettings):
     SARVAM_STT_MODEL: str = "saaras:v4"
     SARVAM_TTS_SPEAKER: str = "shreya"
 
+    # ---- ElevenLabs (multilingual TTS — a selectable provider) ----
+    # Switchable per tenant from the dashboard (voice_config.tts_provider =
+    # "elevenlabs"). One voice id works across every language because the
+    # ElevenLabs models are multilingual, so there is no per-language speaker
+    # map the way Sarvam needs. Defaults below are only used when the tenant
+    # picked ElevenLabs but set no explicit voice/model.
+    ELEVENLABS_API_KEY: str = "placeholder"
+    ELEVENLABS_MODEL: str = "eleven_multilingual_v2"
+    ELEVENLABS_VOICE_ID: str = "21m00Tcm4TlvDq8ikWAM"
+
     # ---- LiveKit (Real-time Voice Agent) ----
     # LIVEKIT_URL: the address the WORKER uses to connect (internal/private on EC2).
     # LIVEKIT_PUBLIC_URL: the address handed to BROWSERS in the token response.

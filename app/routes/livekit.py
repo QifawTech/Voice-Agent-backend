@@ -52,9 +52,22 @@ class LiveKitTokenRequest(BaseModel):
             "language (voice_config.language) is used, falling back to english."
         ),
     )
-    tts_provider: str = Field(
-        default="deepgram",
-        description="TTS provider preference for English (deepgram or openrouter).",
+    tts_provider: str | None = Field(
+        default=None,
+        description=(
+            "TTS provider preference: 'deepgram'/'openrouter' for English, or "
+            "'elevenlabs' to use ElevenLabs for ANY language. When omitted, the "
+            "tenant's configured provider (voice_config.tts_provider) is used, "
+            "falling back to 'deepgram'."
+        ),
+    )
+    tts_model: str | None = Field(
+        default=None,
+        description=(
+            "TTS model id. Only used for ElevenLabs (e.g. 'eleven_multilingual_v2', "
+            "'eleven_flash_v2_5'). When omitted, the tenant's configured model "
+            "(voice_config.elevenlabs_model) is used, else the server default."
+        ),
     )
     voice_gender: str | None = Field(
         default=None,
@@ -173,10 +186,31 @@ async def generate_livekit_token(
         else "female"
     )
 
+    # TTS provider: explicit request wins, else the tenant's configured provider
+    # (set in the dashboard Voice Config tab), else deepgram. "elevenlabs" makes
+    # the agent use ElevenLabs for EVERY language, bypassing Sarvam/Deepgram.
+    effective_tts_provider = (
+        payload.tts_provider or tenant_voice_config.get("tts_provider") or "deepgram"
+    ).lower()
+
     # Explicit named voice for this language: caller's choice wins, else the
     # tenant's configured per-language voice (voice_config.voices[language]).
     tenant_voices = tenant_voice_config.get("voices") or {}
     effective_voice = payload.voice or tenant_voices.get(effective_language)
+
+    # ElevenLabs is multilingual, so its voice/model are stored once (not per
+    # language): voice_config.elevenlabs_voice_id / elevenlabs_model. When the
+    # provider is ElevenLabs these win so one picked voice serves all languages.
+    effective_tts_model: str | None = None
+    if effective_tts_provider == "elevenlabs":
+        effective_voice = (
+            payload.voice
+            or tenant_voice_config.get("elevenlabs_voice_id")
+            or effective_voice
+        )
+        effective_tts_model = (
+            payload.tts_model or tenant_voice_config.get("elevenlabs_model") or None
+        )
 
     # Speaking pace: explicit request wins, else the tenant's configured pace,
     # else 1.0 (normal). Clamped to the range bulbul:v3 accepts.
@@ -208,7 +242,8 @@ async def generate_livekit_token(
         "voice_config": config.get("voice_config") or {},
         "upi_id": config.get("upi_id"),
         "language": effective_language,
-        "ttsProvider": payload.tts_provider,
+        "ttsProvider": effective_tts_provider,
+        "ttsModel": effective_tts_model,
         "voiceGender": effective_voice_gender,
         "voice": effective_voice,
         "pace": effective_pace,

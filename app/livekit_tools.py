@@ -27,7 +27,7 @@ from typing import Any, Sequence
 
 from livekit.agents import RunContext, llm
 
-from app.services.tool_presets import PRESET_SPECS
+from app.services.tool_presets import INTERNAL_TOOL_NAMES, PRESET_SPECS
 from app.services.tool_result import format_tool_result
 from app.services.tool_spec import ToolSpec
 
@@ -111,14 +111,24 @@ class RestaurantTools(llm.Toolset):
             spec.name: spec for spec in (specs if specs is not None else PRESET_SPECS)
         }
 
+        # Internal tools (e.g. get_greeting) stay in self._specs so the platform
+        # can still resolve and call them, but are kept OUT of the model's tool
+        # list so it never invokes them mid-conversation.
+        llm_specs = [
+            spec
+            for name, spec in self._specs.items()
+            if name not in INTERNAL_TOOL_NAMES
+        ]
+
         super().__init__(
             id="restaurant_tools",
-            tools=[self._build_tool(spec) for spec in self._specs.values()],
+            tools=[self._build_tool(spec) for spec in llm_specs],
         )
 
         logger.info(
-            f"Toolset built with {len(self._specs)} tools: "
-            f"{', '.join(sorted(self._specs)) or 'none'}"
+            f"Toolset built with {len(llm_specs)} model tools "
+            f"({len(self._specs)} specs loaded): "
+            f"{', '.join(sorted(s.name for s in llm_specs)) or 'none'}"
         )
 
     # ──────────────────────────────────────────────────────────────

@@ -46,6 +46,33 @@ from app.services.tool_spec import ToolSpec
 # with the same component.
 PRESETS: list[dict[str, Any]] = [
     # ──────────────────────────────────────────────────────────
+    # Fetched ONCE at call connect by the platform (not by the LLM) to build the
+    # opening line — see INTERNAL_TOOL_NAMES below and build_initial_greeting in
+    # livekit_agent.py. Seeded like any other tool so each tenant can repoint its
+    # path/query at their own API, or edit it, from the dashboard. A tenant whose
+    # API has no such endpoint simply gets the plain welcome (the fetch fails
+    # soft), so the greeting data is opt-in by virtue of the endpoint existing.
+    {
+        "name": "get_greeting",
+        "display_name": "Opening Greeting Data",
+        "description": (
+            "Internal. Fetched once when a call connects to build the opening "
+            "line (menu size and current best sellers). The assistant never "
+            "calls this during the conversation."
+        ),
+        "parameters": {"type": "object", "properties": {}, "required": []},
+        "http_method": "GET",
+        "path_template": "/voice-agent/greeting",
+        # lang is the caller's language, passed by the platform at connect so the
+        # API can return wording in that language. Unresolved -> dropped, and the
+        # API defaults to English.
+        "query_template": {"restaurantId": "{restaurant_id}", "lang": "{lang}"},
+        "body_template": None,
+        "headers_template": None,
+        "success_template": None,
+        "sort_order": 5,
+    },
+    # ──────────────────────────────────────────────────────────
     {
         "name": "check_menu",
         "display_name": "Check Menu",
@@ -300,6 +327,14 @@ PRESETS: list[dict[str, Any]] = [
         "sort_order": 70,
     },
 ]
+
+# The tool the platform calls at connect to build the opening line.
+GREETING_TOOL_NAME = "get_greeting"
+
+# Tools the PLATFORM invokes itself (e.g. at call connect), never offered to the
+# LLM. They are still seeded and dashboard-editable like any other tool; they
+# are only kept out of the model's tool list so it cannot call them mid-call.
+INTERNAL_TOOL_NAMES: frozenset[str] = frozenset({GREETING_TOOL_NAME})
 
 PRESET_MAP: dict[str, dict[str, Any]] = {p["name"]: p for p in PRESETS}
 

@@ -61,6 +61,23 @@ logger = get_logger(__name__)
 router = APIRouter(prefix="/api/v1/voice", tags=["Voice"])
 
 
+def _tts_opts(tenant) -> dict:
+    """TTS provider overrides from a tenant's voice_config, for SpeechService.
+
+    Returns ElevenLabs options only when the tenant switched to it in the
+    dashboard (voice_config.tts_provider == "elevenlabs"); otherwise an empty
+    dict so synthesize() keeps its language-based Deepgram/Sarvam routing.
+    """
+    vc = getattr(tenant, "voice_config", None) or {}
+    if (vc.get("tts_provider") or "").lower() == "elevenlabs":
+        return {
+            "provider": "elevenlabs",
+            "voice_id": vc.get("elevenlabs_voice_id"),
+            "model": vc.get("elevenlabs_model"),
+        }
+    return {}
+
+
 # ──────────────────────────────────────────────────────────────
 # REST Endpoints
 # ──────────────────────────────────────────────────────────────
@@ -294,6 +311,7 @@ async def send_audio_message(
             response_audio = await speech.synthesize(
                 text=ai_response_text,
                 language=payload.language,
+                **_tts_opts(tenant),
             )
             response_audio_b64 = base64.b64encode(response_audio).decode("utf-8")
         except SpeechServiceError as e:
@@ -585,6 +603,7 @@ async def voice_websocket(
             greeting_audio = await speech.synthesize(
                 text=greeting_text,
                 language=current_language,
+                **_tts_opts(tenant),
             )
             greeting_audio_b64 = base64.b64encode(greeting_audio).decode("utf-8")
         except Exception as e:
@@ -726,6 +745,7 @@ async def voice_websocket(
                                 chunk_audio = await speech.synthesize(
                                     text=chunk,
                                     language=current_language,
+                                    **_tts_opts(tenant),
                                 )
                                 chunk_b64 = base64.b64encode(chunk_audio).decode("utf-8")
                                 await websocket.send_json({
@@ -810,6 +830,7 @@ async def voice_websocket(
                                 chunk_audio = await speech.synthesize(
                                     text=chunk,
                                     language=current_language,
+                                    **_tts_opts(tenant),
                                 )
                                 chunk_b64 = base64.b64encode(chunk_audio).decode("utf-8")
                                 await websocket.send_json({

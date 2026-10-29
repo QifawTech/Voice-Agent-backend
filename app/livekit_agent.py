@@ -30,6 +30,7 @@ import sys
 import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
+from typing import Sequence
 
 # Ensure UTF-8 output on Windows terminals to avoid charmap encoding errors with Indic scripts
 if sys.platform == "win32":
@@ -49,9 +50,12 @@ from livekit.agents import (
     metrics,
 )
 from livekit.agents.voice import AgentSession, Agent
-from livekit.plugins import deepgram, openai, sarvam, silero
+from livekit.plugins import deepgram, elevenlabs, openai, sarvam, silero
 
 from app.livekit_tools import RestaurantTools
+from app.services.action_router import ActionRouter
+from app.services.tool_presets import GREETING_TOOL_NAME, PRESET_SPEC_MAP
+from app.services.tool_spec import ToolSpec
 
 load_dotenv()
 
@@ -99,18 +103,22 @@ class FilteredAgent(Agent):
     characters (DeepSeek token leakage, unsupported Unicode) before they
     reach the Sarvam TTS engine.
 
-    Filtering is only applied for non-English (Sarvam) TTS. Deepgram
-    handles all Unicode natively, so filtering English text would strip
-    curly quotes, em-dashes, etc. and cause words to be skipped.
+    Filtering is only applied for non-English Sarvam TTS. Deepgram and
+    ElevenLabs handle all Unicode natively, so filtering their text would
+    strip curly quotes, em-dashes, Indic script, etc. and cause words to be
+    skipped — hence the English AND the ElevenLabs guards below both bypass it.
     """
 
-    def __init__(self, *, language: str = "english", **kwargs):
+    def __init__(self, *, language: str = "english", tts_provider: str = "", **kwargs):
         super().__init__(**kwargs)
         self._language = language
+        self._tts_provider = (tts_provider or "").lower()
 
     async def tts_node(self, text, model_settings):
         """Filter TTS input text before passing to the TTS plugin."""
-        if self._language == "english":
+        # English (Deepgram) and ElevenLabs (any language) need no filtering —
+        # the Sarvam-only safe-char stripping would corrupt their output.
+        if self._language == "english" or self._tts_provider == "elevenlabs":
             async for frame in super().tts_node(text, model_settings):
                 yield frame
             return
@@ -242,29 +250,90 @@ def build_instruction_text(tenant_name: str, language: str, voice_config: dict |
     return instruction
 
 
-def build_initial_greeting(tenant_name: str, language: str, participant_name: str = "", voice_config: dict | None = None) -> str:
-    """Build the initial greeting the agent speaks when a customer connects."""
+def build_initial_greeting(
+    tenant_name: str,
+    language: str,
+    participant_name: str = "",
+    voice_config: dict | None = None,
+    api_greeting: str | None = None,
+) -> str:
+    """The line the agent speaks when a customer connects.
+
+    No greeting WORDING lives here — that belongs to each client, so the agent
+    never phrases anything itself. Precedence:
+
+      1. `api_greeting` — a ready, language-correct line the tenant's own
+         greeting API returned (api mode). Spoken verbatim.
+      2. the tenant's typed greeting for this language (default mode), from
+         voice_config via the dashboard.
+      3. a last-resort English welcome, used only when a tenant is misconfigured
+         (api mode but the API failed, and no typed greeting). Deliberately bare:
+         real wording comes from the API or the typed greeting, never from here.
+    """
     from app.services.prompt_builder import resolve_language_config
 
-    voice_config = voice_config or {}
+    if api_greeting and api_greeting.strip():
+        return api_greeting.strip()
 
-    # A tenant-authored greeting for this language wins — it's what they typed
-    # into the dashboard and expect callers to hear.
-    custom_greeting = resolve_language_config(voice_config, language)["greeting"]
+    custom_greeting = resolve_language_config(voice_config or {}, language)["greeting"]
     if custom_greeting:
         return custom_greeting
 
     name_part = f" {participant_name}" if participant_name else ""
+    return f"Hello{name_part}! Welcome to {tenant_name}."
 
-    greetings = {
-        "english": f"Hello{name_part}! Welcome to {tenant_name}. How can I help you today?",
-        "telugu": f"నమస్కారం{name_part}! {tenant_name} కి స్వాగతం. నేను మీకు ఎలా సహాయం చేయగలను?",
-        "tamil": f"வணக்கம்{name_part}! {tenant_name} க்கு வரவேற்கிறோம். நான் எப்படி உங்களுக்கு உதவ முடியும்?",
-        "kannada": f"ನಮಸ್ಕಾರ{name_part}! {tenant_name} ಗೆ ಸ್ವಾಗತ. ನಾನು ನಿಮಗೆ ಹೇಗೆ ಸಹಾಯ ಮಾಡಬಹುದು?",
-        "malayalam": f"നമസ്കാരം{name_part}! {tenant_name} ലേക്ക് സ്വാഗതം. എനിക്ക് നിങ്ങളെ എങ്ങനെ സഹായിക്കാനാകും?",
-    }
 
-    return greetings.get(language, greetings["english"])
+def resolve_greeting_spec(tool_specs: Sequence[ToolSpec] | None) -> ToolSpec | None:
+    """The greeting tool for this tenant: their own if configured, else the default.
+
+    The greeting tool is seeded into every tenant and editable from the
+    dashboard, so a future client can repoint it at their own API. A tenant
+    whose rows predate the tool (or who deleted it) falls back to the built-in
+    preset, so existing restaurants keep their greeting without a re-seed. If
+    even the preset is missing, there is simply no greeting fetch.
+    """
+    if tool_specs:
+        for spec in tool_specs:
+            if spec.name == GREETING_TOOL_NAME:
+                return spec
+    return PRESET_SPEC_MAP.get(GREETING_TOOL_NAME)
+
+
+async def fetch_api_greeting(
+    tenant: object,
+    restaurant_id: str | None,
+    greeting_spec: ToolSpec | None,
+    language: str,
+) -> str | None:
+    """The tenant API's ready-to-speak opening line, or None if unavailable.
+
+    `greeting_spec` is the tenant's configured (dashboard-editable) greeting
+    tool, so this calls whatever API that tenant pointed it at — not a hardcoded
+    Sopzy path. `language` is passed through (query `lang`) so the API returns
+    wording in the caller's language; the API owns that wording, not us.
+
+    Never raises: a slow, failing or absent endpoint must still let the agent
+    greet, so any problem logs and returns None, and build_initial_greeting
+    falls back to the typed greeting or a bare welcome.
+    """
+    if greeting_spec is None:
+        return None
+    try:
+        result = await ActionRouter().execute(
+            greeting_spec.name,
+            {"lang": language},
+            tenant,
+            restaurant_id=restaurant_id,
+            tools=[greeting_spec],
+        )
+    except Exception:
+        logger.warning("api_greeting_fetch_failed", exc_info=True)
+        return None
+
+    if not result.get("success"):
+        return None
+    greeting = result.get("greeting")
+    return greeting.strip() if isinstance(greeting, str) and greeting.strip() else None
 
 
 # ──────────────────────────────────────────────────────────────
@@ -312,6 +381,7 @@ def get_tts_plugin(
     voice_gender: str = "female",
     voice: str | None = None,
     pace: float = 1.0,
+    model: str | None = None,
 ):
     """
     Get the appropriate TTS plugin for the language and requested voice.
@@ -342,6 +412,25 @@ def get_tts_plugin(
     """
     is_male = voice_gender == "male"
     voice = (voice or "").strip() or None
+
+    # ElevenLabs is provider-first: when the tenant picks it, it handles EVERY
+    # language (its models are multilingual), so this branch comes before the
+    # language-based Sarvam/Deepgram routing below. One voice id serves all
+    # languages, so `voice` is the ElevenLabs voice id and `model` the model id.
+    if tts_provider == "elevenlabs":
+        el_voice = voice or os.environ.get("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")
+        el_model = (model or "").strip() or os.environ.get(
+            "ELEVENLABS_MODEL", "eleven_multilingual_v2"
+        )
+        logger.info(
+            f"TTS resolved — provider: elevenlabs, language: {language}, "
+            f"voice_id: {el_voice!r}, model: {el_model!r}"
+        )
+        return elevenlabs.TTS(
+            voice_id=el_voice,
+            model=el_model,
+            api_key=os.environ.get("ELEVENLABS_API_KEY"),
+        )
 
     if language in SARVAM_LANGUAGE_MAP and language != "english":
         if voice:
@@ -574,6 +663,7 @@ async def entrypoint(ctx: JobContext):
 
     user_lang = metadata.get("language", "english").lower()
     tts_provider = metadata.get("ttsProvider", "deepgram").lower()
+    tts_model = metadata.get("ttsModel") or None
     voice_gender = "male" if metadata.get("voiceGender", "female").lower() == "male" else "female"
     voice = metadata.get("voice") or None
     try:
@@ -588,7 +678,8 @@ async def entrypoint(ctx: JobContext):
 
     logger.info(
         f"Room started — language: {user_lang}, "
-        f"tts_provider: {tts_provider}, voice_gender: {voice_gender}, "
+        f"tts_provider: {tts_provider}, tts_model: {tts_model!r}, "
+        f"voice_gender: {voice_gender}, "
         f"voice: {voice!r}, pace: {pace}, "
         f"tenant_name: {tenant_name}, "
         f"restaurant_id: {restaurant_id}, "
@@ -626,7 +717,7 @@ async def entrypoint(ctx: JobContext):
 
     # ── Configure plugins ───────────────────────────────────────
     stt_plugin = get_stt_plugin(user_lang)
-    tts_plugin = get_tts_plugin(user_lang, tts_provider, voice_gender, voice, pace)
+    tts_plugin = get_tts_plugin(user_lang, tts_provider, voice_gender, voice, pace, tts_model)
 
     # Disable the model's "thinking" tokens. On a voice turn every reasoning
     # token is dead air before the first word, and we saw ~160 of them per
@@ -647,7 +738,36 @@ async def entrypoint(ctx: JobContext):
     # ── Build prompts ───────────────────────────────────────────
     instruction_text = build_instruction_text(tenant_name, user_lang, voice_config)
     participant_name = participant.name or ""
-    initial_greeting = build_initial_greeting(tenant_name, user_lang, participant_name, voice_config)
+
+    # Which tools this tenant has enabled, straight from its dashboard config.
+    # None — no tenant, or the lookup failed — leaves RestaurantTools on the
+    # built-in restaurant set. Loaded before the greeting because the greeting
+    # data is fetched through this tenant's own (editable) greeting tool.
+    with _timed("load_tool_specs"):
+        tool_specs = await load_tenant_tool_specs(str(tenant.id)) if tenant else None
+
+    # How this tenant set up its greeting, from the dashboard (voice_config.
+    # greeting_setup). "api" pulls live data; "default" speaks the welcome they
+    # typed; anything else means they have not finished setup, so the agent
+    # still greets (never silent) but with the bare name welcome only.
+    greeting_setup = (voice_config or {}).get("greeting_setup") or {}
+    greeting_mode = greeting_setup.get("mode")
+
+    # The greeting line is fetched from the tenant's own API ONLY in "api" mode —
+    # a "default" tenant must not pay a connect-time round-trip for a line it will
+    # not speak. The API is passed the caller's language and returns ready wording;
+    # on any failure this is None and build_initial_greeting falls back.
+    api_greeting: str | None = None
+    if greeting_mode == "api":
+        greeting_spec = resolve_greeting_spec(tool_specs)
+        with _timed("api_greeting_fetch"):
+            api_greeting = await fetch_api_greeting(
+                tenant, restaurant_id, greeting_spec, user_lang
+            )
+
+    initial_greeting = build_initial_greeting(
+        tenant_name, user_lang, participant_name, voice_config, api_greeting
+    )
 
     # ── Create agent ────────────────────────────────────────────
     # Extract only what we need from the ORM object into a plain dict
@@ -660,12 +780,6 @@ async def entrypoint(ctx: JobContext):
             "api_base_url": tenant.api_base_url,
             "api_auth_token": tenant.api_auth_token,
         }
-
-    # Which tools this tenant has enabled, straight from its dashboard config.
-    # None — no tenant, or the lookup failed — leaves RestaurantTools on the
-    # built-in restaurant set.
-    with _timed("load_tool_specs"):
-        tool_specs = await load_tenant_tool_specs(str(tenant.id)) if tenant else None
 
     # One session id for every row this call writes — order events during the
     # call and the conversation log at the end. The room name is unique per
@@ -685,6 +799,7 @@ async def entrypoint(ctx: JobContext):
 
     agent = FilteredAgent(
         language=user_lang,
+        tts_provider=tts_provider,
         instructions=instruction_text,
         tools=[tools],
     )

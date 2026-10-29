@@ -47,6 +47,7 @@ livekit-agents>=1.8.4
 livekit-plugins-openai>=1.8.4
 livekit-plugins-deepgram>=1.8.4
 livekit-plugins-sarvam>=1.8.4
+livekit-plugins-elevenlabs>=1.8.4
 livekit-plugins-silero>=1.8.4
 livekit-api>=1.0.0
 

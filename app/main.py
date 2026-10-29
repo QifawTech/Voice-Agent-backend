@@ -271,6 +271,7 @@ def create_app() -> FastAPI:
     from app.routes.voice import router as voice_router
     from app.routes.analytics import router as analytics_router
     from app.routes.livekit import router as livekit_router
+    from app.routes.elevenlabs import router as elevenlabs_router
 
     app.include_router(auth_router)
     app.include_router(tenant_router)
@@ -279,6 +280,7 @@ def create_app() -> FastAPI:
     app.include_router(voice_router)
     app.include_router(analytics_router)
     app.include_router(livekit_router)
+    app.include_router(elevenlabs_router)
 
     logger.info("fastapi_app_created", routes=len(app.routes))
 

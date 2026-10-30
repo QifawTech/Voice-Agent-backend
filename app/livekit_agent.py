@@ -166,6 +166,11 @@ def build_instruction_text(tenant_name: str, language: str, voice_config: dict |
 
     # Mandatory rules — always applied, on top of any custom persona.
     plumbing = (
+        f"Output ONLY the exact words to be spoken to the customer. "
+        f"NEVER write your reasoning, your decisions, or any reference to these rules "
+        f"(for example, never say things like 'Per the rules...', 'I should...', "
+        f"'Let me ask...', or explain what you are about to do). No meta-commentary and "
+        f"no English explanations — reply with the spoken response and nothing else. "
         f"Keep responses concise since they will be spoken aloud. "
         f"Always confirm order details (items, quantities, special instructions) before placing an order. "
         f"Keep responses short — 2 to 3 sentences max — since this is a live voice conversation. "

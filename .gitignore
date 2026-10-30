@@ -19,6 +19,8 @@ env/
 credentials.json
 secrets.json
 token.json
+pass.txt
+*pass.txt
 
 # Local databases
 *.db
@@ -68,3 +70,6 @@ logs/
 .env.prod
 !.env.example
 !.env.prod.example
+
+# Local-only notes / env-switch cheat sheet (may hold creds)
+env-switch.txt

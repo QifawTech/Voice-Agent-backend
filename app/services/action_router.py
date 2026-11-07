@@ -148,6 +148,7 @@ class ActionRouter:
         tenant: Any,
         restaurant_id: str | None = None,
         tools: dict[str, ToolSpec] | Sequence[ToolSpec] | None = None,
+        context: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """
         Execute a tool call against the tenant's API.
@@ -161,6 +162,10 @@ class ActionRouter:
             tenant: The Tenant model/dict with api_base_url and api_auth_token.
             restaurant_id: Sub-tenant slug, for multi-restaurant platforms.
             tools: The tenant's enabled specs. Defaults to the built-in presets.
+            context: Per-call values supplied by the client (the phone) at call
+                start. Each key is exposed to tool templates as {context_<key>}.
+                Carried through untouched — the platform never validates these;
+                the tenant's own API must treat them as untrusted input.
 
         Returns:
             Result dict with at minimum {"success": bool, ...}.
@@ -217,6 +222,14 @@ class ActionRouter:
         # — it identifies which sub-tenant of a platform account is being served.
         if restaurant_id:
             arguments["restaurant_id"] = restaurant_id
+
+        # Per-call context from the client, namespaced so a tool template reads
+        # it as {context_<key>} (e.g. {context_lat}). Unlike restaurant_id these
+        # are NOT validated by the platform — they are carried through as-is, and
+        # the tenant's own API is responsible for treating them as untrusted.
+        if context:
+            for ctx_key, ctx_val in context.items():
+                arguments[f"context_{ctx_key}"] = ctx_val
 
         logger.info(
             "action_router_executing",

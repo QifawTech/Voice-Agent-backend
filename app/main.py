@@ -238,8 +238,12 @@ def create_app() -> FastAPI:
         from fastapi.responses import FileResponse
         import os
 
+        # app/main.py -> app -> Voice-Agent-backend. Two dirname()s land in the
+        # backend root, where the Voice-Widget folder lives. A third climbed one
+        # level too high (into the parent workspace) and served a stale copy of
+        # the widget that defaulted data-language to "en".
         widget_path = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
             "Voice-Widget",
             "voice-widget.js",
         )

@@ -87,11 +87,16 @@ class RestaurantTools(llm.Toolset):
         specs: Sequence[ToolSpec] | None = None,
         session_id: str | None = None,
         sub_tenant_id: str | None = None,
+        context: dict[str, str] | None = None,
     ):
         self.tenant = tenant
         self.restaurant_id = restaurant_id
         self.room = room
         self.language = language
+
+        # Per-call values the client sent at connect (e.g. lat/lng/customer
+        # name). Passed to every tool call as {context_<key>}. See ActionRouter.
+        self.context = context or {}
 
         # Tie every row this call writes (order events, and the final
         # conversation log) to one session id, so the dashboard groups them.
@@ -267,6 +272,7 @@ class RestaurantTools(llm.Toolset):
                     tenant=self.tenant,
                     restaurant_id=self.restaurant_id,
                     tools=self._specs,
+                    context=self.context,
                 )
             logger.info(
                 "LATENCY tool %s=%.0fms (api_reported=%sms)",

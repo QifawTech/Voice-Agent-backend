@@ -309,6 +309,7 @@ async def fetch_api_greeting(
     restaurant_id: str | None,
     greeting_spec: ToolSpec | None,
     language: str,
+    context: dict[str, str] | None = None,
 ) -> str | None:
     """The tenant API's ready-to-speak opening line, or None if unavailable.
 
@@ -330,6 +331,7 @@ async def fetch_api_greeting(
             tenant,
             restaurant_id=restaurant_id,
             tools=[greeting_spec],
+            context=context,
         )
     except Exception:
         logger.warning("api_greeting_fetch_failed", exc_info=True)
@@ -680,6 +682,9 @@ async def entrypoint(ctx: JobContext):
     tenant_name = metadata.get("tenant_name", "the restaurant")
     restaurant_id = metadata.get("restaurant_id")
     sub_tenant_id = metadata.get("sub_tenant_id")
+    # Per-call values the client sent at connect (sanitised in the token route).
+    # Exposed to tools and the greeting fetch as {context_<key>}.
+    call_context = metadata.get("context") or {}
 
     logger.info(
         f"Room started — language: {user_lang}, "
@@ -767,7 +772,7 @@ async def entrypoint(ctx: JobContext):
         greeting_spec = resolve_greeting_spec(tool_specs)
         with _timed("api_greeting_fetch"):
             api_greeting = await fetch_api_greeting(
-                tenant, restaurant_id, greeting_spec, user_lang
+                tenant, restaurant_id, greeting_spec, user_lang, call_context
             )
 
     initial_greeting = build_initial_greeting(
@@ -800,6 +805,7 @@ async def entrypoint(ctx: JobContext):
         specs=tool_specs,
         session_id=session_id,
         sub_tenant_id=sub_tenant_id,
+        context=call_context,
     )
 
     agent = FilteredAgent(

@@ -171,14 +171,18 @@ def _check_placeholders(
         | _collect_placeholders(headers_template)
     )
 
-    unknown = sorted(used - known)
+    # {context_<key>} placeholders are filled at call time from the client's
+    # per-call context bag (see ActionRouter.execute), not from a declared
+    # parameter, so they are always allowed. They resolve if the caller sent
+    # that key and are dropped if not, exactly like an optional argument.
+    unknown = sorted(u for u in (used - known) if not u.startswith("context_"))
     if unknown:
         offenders = ", ".join("{" + name + "}" for name in unknown)
         hint = ", ".join(sorted(declared)) or "none declared yet"
         raise ValueError(
             f"Template uses {offenders}, which this tool does not declare as a "
             f"parameter. Declared parameters: {hint}. "
-            f"(restaurant_id is always available.)"
+            f"(restaurant_id and context_* are always available.)"
         )
 
 

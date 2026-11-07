@@ -13,6 +13,7 @@ dispatched to the room by the LiveKit server when a participant joins.
 """
 
 import json
+import re
 import time
 import uuid
 
@@ -30,6 +31,35 @@ from app.redis_client import get_redis
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/api/v1/livekit", tags=["LiveKit"])
+
+# Limits for the per-call context bag. It is untrusted input from the client,
+# so it is capped before it rides inside the participant token.
+_CONTEXT_MAX_KEYS = 32
+_CONTEXT_MAX_VALUE_LEN = 256
+_CONTEXT_KEY_RE = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
+
+
+def _sanitize_context(raw: dict[str, str] | None) -> dict[str, str]:
+    """Clean the client-supplied context bag into safe string key/values.
+
+    Drops anything that is not a sensible lowercase key mapped to a short
+    string: keeps the token small and keeps a malformed or oversized bag from
+    a tampered client out of the pipeline. Never raises — a bad bag just yields
+    a smaller (possibly empty) one, so the call still proceeds.
+    """
+    if not isinstance(raw, dict):
+        return {}
+    clean: dict[str, str] = {}
+    for key, value in raw.items():
+        if len(clean) >= _CONTEXT_MAX_KEYS:
+            break
+        if not isinstance(key, str) or not _CONTEXT_KEY_RE.match(key):
+            continue
+        if value is None:
+            continue
+        text = value if isinstance(value, str) else str(value)
+        clean[key] = text[:_CONTEXT_MAX_VALUE_LEN]
+    return clean
 
 
 # ──────────────────────────────────────────────────────────────
@@ -111,6 +141,17 @@ class LiveKitTokenRequest(BaseModel):
     room: str | None = Field(
         default=None,
         description="Specific room name to join. If not provided, a unique room is created.",
+    )
+    context: dict[str, str] | None = Field(
+        default=None,
+        description=(
+            "Free-form per-call values supplied by the client (e.g. the phone): "
+            "customer_name, lat, lng, and anything a tenant's own tools expect. "
+            "Each key K is exposed to tool templates as {context_K}. Values are "
+            "carried through untouched and NOT validated by the platform; the "
+            "tenant's API must treat them as untrusted. Strings only; sanitised "
+            "and capped before use (see _sanitize_context)."
+        ),
     )
 
 
@@ -247,6 +288,9 @@ async def generate_livekit_token(
         "voiceGender": effective_voice_gender,
         "voice": effective_voice,
         "pace": effective_pace,
+        # Per-call values from the client, sanitised. The agent injects these
+        # into tool calls as {context_<key>}. Empty dict when none were sent.
+        "context": _sanitize_context(payload.context),
     })
 
     try:

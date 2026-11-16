@@ -7,20 +7,20 @@ money. An account can own several.
 
 Why this table exists now, in the engine phase, before any agent-picker UI:
 every table below it (`people`, `reminders`) is keyed by agent_id. Keying them
-by tenant_id instead and re-pointing them later would mean re-keying the whole
+by account_id instead and re-pointing them later would mean re-keying the whole
 engine during the accounts migration — which is already the riskiest change in
 the plan. One small table now avoids that.
 
-On the column name `account_id`: it is a foreign key to `tenants.id` today.
-What is called a Tenant is really an Account that owns agents, and the plan
+On the column name `account_id`: it is a foreign key to `accounts.id` today.
+What is called a Account is really an Account that owns agents, and the plan
 renames the table. Naming the column for what it means rather than for the
 table it currently points at means the rename moves one line, not thirty.
 
 Nothing about the restaurant product changes: no existing table is touched, and
-a restaurant tenant with no row here keeps working exactly as before.
+a restaurant account with no row here keeps working exactly as before.
 
 Relationships:
-    - Belongs to one Tenant (the account)
+    - Belongs to one Account (the account)
     - Has many People (Nudge: who gets reminded)
     - Has many Reminders
 """
@@ -53,10 +53,10 @@ class Agent(Base):
     )
 
     # ---- Account Association ----
-    # FK to tenants.id. See the module docstring on the name.
+    # FK to accounts.id. See the module docstring on the name.
     account_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("tenants.id", ondelete="CASCADE"),
+        ForeignKey("accounts.id", ondelete="CASCADE"),
         nullable=False,
     )
 
@@ -71,7 +71,7 @@ class Agent(Base):
     slug: Mapped[str] = mapped_column(String(100), nullable=False)
 
     # ---- Voice Configuration ----
-    # Same shape as tenants.voice_config. Per-agent from the start, because the
+    # Same shape as accounts.voice_config. Per-agent from the start, because the
     # reminder voice and the restaurant voice are different decisions.
     voice_config: Mapped[dict | None] = mapped_column(
         JSON, nullable=True, default=dict
@@ -94,7 +94,7 @@ class Agent(Base):
     )
 
     # ---- Relationships ----
-    account = relationship("Tenant", back_populates="agents")
+    account = relationship("Account", back_populates="agents")
     people = relationship(
         "Person",
         back_populates="agent",

@@ -19,7 +19,7 @@ This runs as a SEPARATE PROCESS alongside the FastAPI server:
 The agent worker registers with the LiveKit server and is dispatched
 to rooms when participants join. Each room gets its own agent instance.
 
-Tenant context (tenant_id, api_key, restaurant_id, language) is passed
+Account context (account_id, api_key, restaurant_id, language) is passed
 via participant metadata as JSON.
 """
 
@@ -150,10 +150,10 @@ def build_instruction_text(tenant_name: str, language: str, voice_config: dict |
     tone = voice_config.get("tone", "friendly and professional")
     extra = voice_config.get("extra_instructions", "")
 
-    # A tenant can paste their own instructions per language from the dashboard.
+    # A account can paste their own instructions per language from the dashboard.
     # When set, it replaces the default persona/role below — but the mandatory
     # ordering, TTS, and tool-calling rules are ALWAYS appended so ordering and
-    # the voice engine keep working no matter what the tenant wrote.
+    # the voice engine keep working no matter what the account wrote.
     custom_instructions = resolve_language_config(voice_config, language)["instructions"]
 
     persona = custom_instructions or (
@@ -267,11 +267,11 @@ def build_initial_greeting(
     No greeting WORDING lives here — that belongs to each client, so the agent
     never phrases anything itself. Precedence:
 
-      1. `api_greeting` — a ready, language-correct line the tenant's own
+      1. `api_greeting` — a ready, language-correct line the account's own
          greeting API returned (api mode). Spoken verbatim.
-      2. the tenant's typed greeting for this language (default mode), from
+      2. the account's typed greeting for this language (default mode), from
          voice_config via the dashboard.
-      3. a last-resort English welcome, used only when a tenant is misconfigured
+      3. a last-resort English welcome, used only when a account is misconfigured
          (api mode but the API failed, and no typed greeting). Deliberately bare:
          real wording comes from the API or the typed greeting, never from here.
     """
@@ -289,10 +289,10 @@ def build_initial_greeting(
 
 
 def resolve_greeting_spec(tool_specs: Sequence[ToolSpec] | None) -> ToolSpec | None:
-    """The greeting tool for this tenant: their own if configured, else the default.
+    """The greeting tool for this account: their own if configured, else the default.
 
-    The greeting tool is seeded into every tenant and editable from the
-    dashboard, so a future client can repoint it at their own API. A tenant
+    The greeting tool is seeded into every account and editable from the
+    dashboard, so a future client can repoint it at their own API. A account
     whose rows predate the tool (or who deleted it) falls back to the built-in
     preset, so existing restaurants keep their greeting without a re-seed. If
     even the preset is missing, there is simply no greeting fetch.
@@ -305,16 +305,16 @@ def resolve_greeting_spec(tool_specs: Sequence[ToolSpec] | None) -> ToolSpec | N
 
 
 async def fetch_api_greeting(
-    tenant: object,
+    account: object,
     restaurant_id: str | None,
     greeting_spec: ToolSpec | None,
     language: str,
     context: dict[str, str] | None = None,
 ) -> str | None:
-    """The tenant API's ready-to-speak opening line, or None if unavailable.
+    """The account API's ready-to-speak opening line, or None if unavailable.
 
-    `greeting_spec` is the tenant's configured (dashboard-editable) greeting
-    tool, so this calls whatever API that tenant pointed it at — not a hardcoded
+    `greeting_spec` is the account's configured (dashboard-editable) greeting
+    tool, so this calls whatever API that account pointed it at — not a hardcoded
     Sopzy path. `language` is passed through (query `lang`) so the API returns
     wording in the caller's language; the API owns that wording, not us.
 
@@ -328,7 +328,7 @@ async def fetch_api_greeting(
         result = await ActionRouter().execute(
             greeting_spec.name,
             {"lang": language},
-            tenant,
+            account,
             restaurant_id=restaurant_id,
             tools=[greeting_spec],
             context=context,
@@ -398,7 +398,7 @@ def get_tts_plugin(
     and Deepgram's `speed` for English. Valid range is 0.5–2.0 (bulbul:v3);
     the caller is expected to clamp it.
 
-    `voice` (optional) is an explicit, provider-specific voice id the tenant
+    `voice` (optional) is an explicit, provider-specific voice id the account
     picked in the dashboard — a Sarvam bulbul:v3 speaker (e.g. "priya") for an
     Indian language, or a Deepgram Aura model (e.g. "aura-luna-en") for English.
     When given it is used verbatim and wins over voice_gender. The caller is
@@ -420,7 +420,7 @@ def get_tts_plugin(
     is_male = voice_gender == "male"
     voice = (voice or "").strip() or None
 
-    # ElevenLabs is provider-first: when the tenant picks it, it handles EVERY
+    # ElevenLabs is provider-first: when the account picks it, it handles EVERY
     # language (its models are multilingual), so this branch comes before the
     # language-based Sarvam/Deepgram routing below. One voice id serves all
     # languages, so `voice` is the ElevenLabs voice id and `model` the model id.
@@ -491,35 +491,35 @@ def get_tts_plugin(
 
 
 # ──────────────────────────────────────────────────────────────
-# Tenant Resolution (from participant metadata)
+# Account Resolution (from participant metadata)
 # ──────────────────────────────────────────────────────────────
 
 async def resolve_tenant_from_metadata(metadata: dict) -> dict | None:
     """
-    Resolve a tenant from the metadata passed by the frontend.
+    Resolve a account from the metadata passed by the frontend.
 
     The frontend sends metadata as JSON with:
-        - tenant_id (str): UUID of the tenant
-        - api_key (str): Tenant's widget API key
+        - account_id (str): UUID of the account
+        - api_key (str): Account's widget API key
         - restaurant_id (str, optional): Restaurant slug
         - language (str, optional): Language preference
         - tts_provider (str, optional): TTS backend preference
 
-    We resolve the tenant by querying the database using the tenant service.
-    If DB is unavailable, we fall back to a minimal tenant dict.
+    We resolve the account by querying the database using the account service.
+    If DB is unavailable, we fall back to a minimal account dict.
     """
-    tenant_id = metadata.get("tenant_id")
+    account_id = metadata.get("account_id")
     api_key = metadata.get("api_key")
 
-    if not tenant_id or not api_key:
-        logger.warning(f"No tenant_id or api_key in participant metadata: {metadata}")
+    if not account_id or not api_key:
+        logger.warning(f"No account_id or api_key in participant metadata: {metadata}")
         return None
 
     try:
         from app.database import create_engine
         from sqlalchemy.ext.asyncio import async_sessionmaker
         from app.redis_client import get_redis_sync
-        from app.services.tenant_service import TenantService
+        from app.services.account_service import AccountService
 
         redis = get_redis_sync()
         
@@ -529,33 +529,33 @@ async def resolve_tenant_from_metadata(metadata: dict) -> dict | None:
         local_session = async_sessionmaker(local_engine, expire_on_commit=False)
         
         async with local_session() as db:
-            service = TenantService(db=db, redis=redis)
-            tenant = await service.get_tenant_by_api_key(api_key)
+            service = AccountService(db=db, redis=redis)
+            account = await service.get_tenant_by_api_key(api_key)
 
-            if tenant and str(tenant.id) == tenant_id and tenant.is_active:
-                logger.info(f"Tenant resolved: {tenant.name} ({tenant.id})")
+            if account and str(account.id) == account_id and account.is_active:
+                logger.info(f"Account resolved: {account.name} ({account.id})")
                 await local_engine.dispose()
-                return tenant
+                return account
 
-            if not tenant:
-                logger.warning(f"Tenant not found in DB for api_key: {api_key}")
-            elif str(tenant.id) != tenant_id:
-                logger.warning(f"Tenant ID mismatch: DB={tenant.id}, Meta={tenant_id}")
-            elif not tenant.is_active:
-                logger.warning(f"Tenant is inactive: {tenant.id}")
+            if not account:
+                logger.warning(f"Account not found in DB for api_key: {api_key}")
+            elif str(account.id) != account_id:
+                logger.warning(f"Account ID mismatch: DB={account.id}, Meta={account_id}")
+            elif not account.is_active:
+                logger.warning(f"Account is inactive: {account.id}")
 
             await local_engine.dispose()
             return None
 
     except Exception as e:
-        logger.error(f"Could not resolve tenant from DB: {e}")
+        logger.error(f"Could not resolve account from DB: {e}")
         # Fall back: return None — the agent will work without restaurant API tools
         return None
 
 
-async def load_tenant_tool_specs(tenant_id: str) -> list | None:
+async def load_tenant_tool_specs(account_id: str) -> list | None:
     """
-    Load the tools this tenant has enabled, as plain ToolSpecs.
+    Load the tools this account has enabled, as plain ToolSpecs.
 
     Plain is the point: the worker job runs on its own event loop and the
     engine is disposed before the session starts, so anything still attached to
@@ -564,7 +564,7 @@ async def load_tenant_tool_specs(tenant_id: str) -> list | None:
     Returns None if the lookup failed, which leaves the toolset on the built-in
     restaurant tools — a database blip should not leave a caller talking to an
     agent that cannot look at the menu. An empty list is a different answer: it
-    means the tenant really has every tool switched off, and that is honoured.
+    means the account really has every tool switched off, and that is honoured.
     """
     try:
         from app.database import create_engine
@@ -578,17 +578,17 @@ async def load_tenant_tool_specs(tenant_id: str) -> list | None:
         local_session = async_sessionmaker(local_engine, expire_on_commit=False)
 
         async with local_session() as db:
-            specs = await ToolRegistry(db=db, redis=redis).load_specs(tenant_id)
+            specs = await ToolRegistry(db=db, redis=redis).load_specs(account_id)
 
         await local_engine.dispose()
         logger.info(
-            f"Loaded {len(specs)} tool(s) for tenant {tenant_id}: "
+            f"Loaded {len(specs)} tool(s) for account {account_id}: "
             f"{', '.join(s.name for s in specs) or 'none'}"
         )
         return specs
 
     except Exception as e:
-        logger.error(f"Could not load tenant tools from DB: {e}")
+        logger.error(f"Could not load account tools from DB: {e}")
         return None
 
 
@@ -614,7 +614,7 @@ def _timed(phase: str):
 
     Same prefix as the per-turn metrics so one `grep LATENCY` over the worker
     log shows the whole picture: first the call-setup phases below (connect →
-    participant → tenant → tools → session start → greeting), then the per-turn
+    participant → account → tools → session start → greeting), then the per-turn
     eou/llm/tts/tool lines for every exchange. That is the full path the
     customer waits on, start to finish, with a number on each leg — so "it feels
     slow" always resolves to a specific line instead of a guess.
@@ -632,8 +632,8 @@ async def entrypoint(ctx: JobContext):
 
     1. Connect to the room (audio only)
     2. Wait for the remote participant
-    3. Parse participant metadata (tenant, language, etc.)
-    4. Resolve tenant from DB
+    3. Parse participant metadata (account, language, etc.)
+    4. Resolve account from DB
     5. Configure STT/TTS plugins based on language
     6. Start the agent session
     7. Speak the initial greeting
@@ -696,7 +696,7 @@ async def entrypoint(ctx: JobContext):
         f"sub_tenant_id: {sub_tenant_id}"
     )
 
-    # ── Resolve tenant ──────────────────────────────────────────
+    # ── Resolve account ──────────────────────────────────────────
     from app.redis_client import init_redis, get_redis_sync
 
     try:
@@ -704,22 +704,22 @@ async def entrypoint(ctx: JobContext):
     except RuntimeError:
         await init_redis()
 
-    with _timed("resolve_tenant"):
-        tenant = await resolve_tenant_from_metadata(metadata)
+    with _timed("resolve_account"):
+        account = await resolve_tenant_from_metadata(metadata)
 
-    if tenant:
-        # Use tenant name from DB
-        tenant_name = getattr(tenant, "name", tenant_name)
-        voice_config = getattr(tenant, "voice_config", None) or {}
+    if account:
+        # Use account name from DB
+        tenant_name = getattr(account, "name", tenant_name)
+        voice_config = getattr(account, "voice_config", None) or {}
     else:
         voice_config = {}
-        logger.warning("Running without tenant — tool calls to restaurant API will fail")
+        logger.warning("Running without account — tool calls to restaurant API will fail")
 
     # For a multi-tenant account the token already carried the merged display
     # config (sub-tenant overrides on top of the parent), resolved and validated
     # when the token was issued. Prefer it so the agent greets the caller as the
     # sub-tenant rather than the parent platform. Absent for single-tenant
-    # accounts, which keep the tenant's own values untouched.
+    # accounts, which keep the account's own values untouched.
     if metadata.get("display_name"):
         tenant_name = metadata["display_name"]
     if metadata.get("voice_config"):
@@ -749,22 +749,22 @@ async def entrypoint(ctx: JobContext):
     instruction_text = build_instruction_text(tenant_name, user_lang, voice_config)
     participant_name = participant.name or ""
 
-    # Which tools this tenant has enabled, straight from its dashboard config.
-    # None — no tenant, or the lookup failed — leaves RestaurantTools on the
+    # Which tools this account has enabled, straight from its dashboard config.
+    # None — no account, or the lookup failed — leaves RestaurantTools on the
     # built-in restaurant set. Loaded before the greeting because the greeting
-    # data is fetched through this tenant's own (editable) greeting tool.
+    # data is fetched through this account's own (editable) greeting tool.
     with _timed("load_tool_specs"):
-        tool_specs = await load_tenant_tool_specs(str(tenant.id)) if tenant else None
+        tool_specs = await load_tenant_tool_specs(str(account.id)) if account else None
 
-    # How this tenant set up its greeting, from the dashboard (voice_config.
+    # How this account set up its greeting, from the dashboard (voice_config.
     # greeting_setup). "api" pulls live data; "default" speaks the welcome they
     # typed; anything else means they have not finished setup, so the agent
     # still greets (never silent) but with the bare name welcome only.
     greeting_setup = (voice_config or {}).get("greeting_setup") or {}
     greeting_mode = greeting_setup.get("mode")
 
-    # The greeting line is fetched from the tenant's own API ONLY in "api" mode —
-    # a "default" tenant must not pay a connect-time round-trip for a line it will
+    # The greeting line is fetched from the account's own API ONLY in "api" mode —
+    # a "default" account must not pay a connect-time round-trip for a line it will
     # not speak. The API is passed the caller's language and returns ready wording;
     # on any failure this is None and build_initial_greeting falls back.
     api_greeting: str | None = None
@@ -772,7 +772,7 @@ async def entrypoint(ctx: JobContext):
         greeting_spec = resolve_greeting_spec(tool_specs)
         with _timed("api_greeting_fetch"):
             api_greeting = await fetch_api_greeting(
-                tenant, restaurant_id, greeting_spec, user_lang, call_context
+                account, restaurant_id, greeting_spec, user_lang, call_context
             )
 
     initial_greeting = build_initial_greeting(
@@ -783,12 +783,12 @@ async def entrypoint(ctx: JobContext):
     # Extract only what we need from the ORM object into a plain dict
     # so we don't hit DetachedInstanceError across async threads
     tenant_dict = None
-    if tenant:
+    if account:
         tenant_dict = {
-            "id": str(tenant.id),
-            "name": tenant.name,
-            "api_base_url": tenant.api_base_url,
-            "api_auth_token": tenant.api_auth_token,
+            "id": str(account.id),
+            "name": account.name,
+            "api_base_url": account.api_base_url,
+            "api_auth_token": account.api_auth_token,
         }
 
     # One session id for every row this call writes — order events during the
@@ -798,7 +798,7 @@ async def entrypoint(ctx: JobContext):
 
     # Instantiate the tools class with our context
     tools = RestaurantTools(
-        tenant=tenant_dict,
+        account=tenant_dict,
         restaurant_id=restaurant_id,
         room=ctx.room,
         language=user_lang,
@@ -921,7 +921,7 @@ async def entrypoint(ctx: JobContext):
 
     async def _persist_conversation() -> None:
         if not tenant_dict:
-            # No tenant resolved — nothing to attribute the conversation to.
+            # No account resolved — nothing to attribute the conversation to.
             return
         from app.services.livekit_logging import log_conversation
 
@@ -944,7 +944,7 @@ async def entrypoint(ctx: JobContext):
         duration = int((datetime.now(timezone.utc) - call_started_at).total_seconds())
 
         await log_conversation(
-            tenant_id=tenant_dict["id"],
+            account_id=tenant_dict["id"],
             session_id=session_id,
             restaurant_id=restaurant_id,
             sub_tenant_id=sub_tenant_id,
@@ -982,7 +982,7 @@ async def entrypoint(ctx: JobContext):
 
     logger.info(
         f"Agent session started in room {ctx.room.name} — "
-        f"tenant: {tenant_name}, language: {user_lang}"
+        f"account: {tenant_name}, language: {user_lang}"
     )
 
 

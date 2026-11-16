@@ -551,7 +551,7 @@ class SpeechService:
         Generate speech from text using ElevenLabs (direct API).
 
         ElevenLabs is multilingual, so one voice id serves every language — the
-        caller passes the tenant's configured voice_id/model, falling back to
+        caller passes the account's configured voice_id/model, falling back to
         the server defaults (ELEVENLABS_VOICE_ID / ELEVENLABS_MODEL).
 
         Endpoint: POST https://api.elevenlabs.io/v1/text-to-speech/{voice_id}

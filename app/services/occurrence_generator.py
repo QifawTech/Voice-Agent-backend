@@ -35,7 +35,7 @@ logger = get_logger(__name__)
 
 # An RRULE is expanded by a library that will happily accept a rule producing
 # millions of dates. This caps one expansion, so a malformed FREQ=SECONDLY
-# cannot exhaust memory for every other tenant.
+# cannot exhaust memory for every other account.
 MAX_OCCURRENCES_PER_RUN = 500
 
 

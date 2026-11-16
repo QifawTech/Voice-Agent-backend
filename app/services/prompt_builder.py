@@ -1,7 +1,7 @@
 """
 Voice Agent Platform — Dynamic Prompt Builder
 
-Builds per-tenant system prompts for DeepSeek by injecting tenant-specific
+Builds per-account system prompts for DeepSeek by injecting account-specific
 details (restaurant name, greeting, UPI ID, language, tone, etc.) into a
 base template.
 
@@ -12,7 +12,7 @@ Usage:
     from app.services.prompt_builder import PromptBuilder
 
     builder = PromptBuilder()
-    system_prompt = builder.build_system_prompt(tenant)
+    system_prompt = builder.build_system_prompt(account)
 """
 
 from app.logger import get_logger
@@ -134,7 +134,7 @@ LANGUAGE_RULES: dict[str, str] = {
 # ──────────────────────────────────────────────────────────────
 # Per-language custom prompts
 # ──────────────────────────────────────────────────────────────
-# Tenants can write their own greeting + instructions for each language from
+# Accounts can write their own greeting + instructions for each language from
 # the dashboard. These live in voice_config["prompts"], keyed by the lowercased
 # language name:
 #
@@ -143,7 +143,7 @@ LANGUAGE_RULES: dict[str, str] = {
 #       "tamil":   {"greeting": "...", "instructions": "..."},
 #   }
 #
-# We currently let tenants edit prompts for these languages only. The agent can
+# We currently let accounts edit prompts for these languages only. The agent can
 # still *run* in any language — unlisted ones just fall back to the defaults.
 # ──────────────────────────────────────────────────────────────
 
@@ -152,14 +152,14 @@ SUPPORTED_PROMPT_LANGUAGES = ("english", "tamil")
 
 def resolve_language_config(voice_config: dict | None, language: str) -> dict:
     """
-    Pull a tenant's custom prompt + greeting for a given language.
+    Pull a account's custom prompt + greeting for a given language.
 
     Reads voice_config["prompts"][<language>] and falls back to the flat legacy
-    ``greeting`` field (which applied to every language) so tenants configured
+    ``greeting`` field (which applied to every language) so accounts configured
     before this feature keep working unchanged.
 
     Args:
-        voice_config: The tenant's voice_config dict (or None).
+        voice_config: The account's voice_config dict (or None).
         language: Runtime language name, e.g. "english" or "Tamil".
 
     Returns:
@@ -183,18 +183,18 @@ def resolve_language_config(voice_config: dict | None, language: str) -> dict:
 
 class PromptBuilder:
     """
-    Builds personalized system prompts for DeepSeek based on tenant configuration.
+    Builds personalized system prompts for DeepSeek based on account configuration.
 
-    Reads tenant model fields (name, platform, upi_id, voice_config) and injects
+    Reads account model fields (name, platform, upi_id, voice_config) and injects
     them into the base template to create a unique persona for each restaurant.
     """
 
-    def build_system_prompt(self, tenant, sub_tenant=None) -> str:
+    def build_system_prompt(self, account, sub_tenant=None) -> str:
         """
-        Build a complete system prompt for a specific tenant.
+        Build a complete system prompt for a specific account.
 
         Args:
-            tenant: Tenant model instance or dict with keys:
+            account: Account model instance or dict with keys:
                 - name (str): Restaurant/business name
                 - platform (str): "sopzy" | "standalone" | "custom"
                 - upi_id (str | None): UPI payment ID
@@ -207,26 +207,26 @@ class PromptBuilder:
             Formatted system prompt string ready for DeepSeek.
         """
         # A sub-tenant's identity and overrides replace the parent's for anything
-        # the caller hears. Without one this resolves to the tenant's own values,
+        # the caller hears. Without one this resolves to the account's own values,
         # so single-tenant behaviour is unchanged.
         if sub_tenant is not None:
-            from app.services.tenant_service import resolve_display_config
+            from app.services.account_service import resolve_display_config
 
-            tenant = resolve_display_config(tenant, sub_tenant)
+            account = resolve_display_config(account, sub_tenant)
 
-        # Extract tenant fields (support both model objects and dicts)
-        name = self._get_field(tenant, "name", "the restaurant")
-        platform = self._get_field(tenant, "platform", "standalone")
-        upi_id = self._get_field(tenant, "upi_id", None)
-        voice_config = self._get_field(tenant, "voice_config", {}) or {}
+        # Extract account fields (support both model objects and dicts)
+        name = self._get_field(account, "name", "the restaurant")
+        platform = self._get_field(account, "platform", "standalone")
+        upi_id = self._get_field(account, "upi_id", None)
+        voice_config = self._get_field(account, "voice_config", {}) or {}
 
         # Extract voice configuration
         language = voice_config.get("language", "English")
         tone = voice_config.get("tone", "friendly and professional")
         extra_instructions = voice_config.get("extra_instructions", "")
 
-        # Resolve the tenant's per-language custom greeting + instructions
-        # (falls back to the legacy flat greeting for older tenants).
+        # Resolve the account's per-language custom greeting + instructions
+        # (falls back to the legacy flat greeting for older accounts).
         lang_cfg = resolve_language_config(voice_config, language)
         greeting = lang_cfg["greeting"]
         custom_instructions = lang_cfg["instructions"]
@@ -291,7 +291,7 @@ class PromptBuilder:
 
     def build_messages(
         self,
-        tenant,
+        account,
         user_message: str,
         conversation_history: list[dict[str, str]] | None = None,
     ) -> list[dict[str, str]]:
@@ -299,7 +299,7 @@ class PromptBuilder:
         Build the complete messages array for a DeepSeek API call.
 
         Args:
-            tenant: Tenant model instance or dict.
+            account: Account model instance or dict.
             user_message: The latest message from the customer.
             conversation_history: Previous messages in the session
                                   [{role: "user"/"assistant", content: "..."}].
@@ -317,7 +317,7 @@ class PromptBuilder:
         messages = []
 
         # 1. System prompt (always first)
-        system_prompt = self.build_system_prompt(tenant)
+        system_prompt = self.build_system_prompt(account)
         messages.append({"role": "system", "content": system_prompt})
 
         # 2. Conversation history (if any)

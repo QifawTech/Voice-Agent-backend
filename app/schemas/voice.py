@@ -36,7 +36,7 @@ class VoiceMessageRequest(BaseModel):
     restaurant_id: str | None = Field(
         default=None,
         max_length=255,
-        description="Restaurant identifier within the tenant platform. Required for multi-restaurant tenants like SOPZY.",
+        description="Restaurant identifier within the account platform. Required for multi-restaurant accounts like SOPZY.",
         examples=["spice-garden"],
     )
 
@@ -71,7 +71,7 @@ class VoiceAudioRequest(BaseModel):
     restaurant_id: str | None = Field(
         default=None,
         max_length=255,
-        description="Restaurant identifier within the tenant platform.",
+        description="Restaurant identifier within the account platform.",
         examples=["spice-garden"],
     )
 
@@ -121,7 +121,7 @@ class SessionResponse(BaseModel):
     """Voice conversation session state."""
 
     session_id: str
-    tenant_id: UUID
+    account_id: UUID
     restaurant_id: str | None = None
     state: str = Field(
         ..., examples=["browsing"]

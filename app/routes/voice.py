@@ -16,7 +16,7 @@ Audio pipeline:
                 → Backend TTS (same provider routing)
                     → Audio bytes → Widget plays response 🔊
 
-All widget endpoints require tenant authentication via X-Tenant-ID + X-API-Key headers.
+All widget endpoints require account authentication via X-Tenant-ID + X-API-Key headers.
 """
 
 import base64
@@ -39,9 +39,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.logger import get_logger
 from app.middleware.rate_limiter import check_message_rate_limit
-from app.middleware.tenant_context import TenantContext, get_tenant_context
-from app.middleware.tenant_resolver import get_current_tenant
-from app.models.tenant import Tenant
+from app.middleware.account_context import AccountContext, get_account_context
+from app.middleware.account_resolver import get_current_account
+from app.models.account import Account
 from app.redis_client import get_redis
 from app.schemas.voice import (
     SessionResponse,
@@ -54,21 +54,21 @@ from app.schemas.voice import (
 from app.services.conversation_engine import ConversationEngine, ConversationEngineError
 from app.services.session_manager import SessionManager
 from app.services.speech_service import SpeechService, SpeechServiceError
-from app.services.tenant_service import TenantService
+from app.services.account_service import AccountService
 
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/api/v1/voice", tags=["Voice"])
 
 
-def _tts_opts(tenant) -> dict:
-    """TTS provider overrides from a tenant's voice_config, for SpeechService.
+def _tts_opts(account) -> dict:
+    """TTS provider overrides from a account's voice_config, for SpeechService.
 
-    Returns ElevenLabs options only when the tenant switched to it in the
+    Returns ElevenLabs options only when the account switched to it in the
     dashboard (voice_config.tts_provider == "elevenlabs"); otherwise an empty
     dict so synthesize() keeps its language-based Deepgram/Sarvam routing.
     """
-    vc = getattr(tenant, "voice_config", None) or {}
+    vc = getattr(account, "voice_config", None) or {}
     if (vc.get("tts_provider") or "").lower() == "elevenlabs":
         return {
             "provider": "elevenlabs",
@@ -88,14 +88,14 @@ def _tts_opts(tenant) -> dict:
     response_model=SessionResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Create Voice Session",
-    description="Create a new voice conversation session for a tenant.",
+    description="Create a new voice conversation session for a account.",
 )
 async def create_session(
     restaurant_id: str | None = Query(
         default=None,
         description="Sub-tenant slug. Required for multi-tenant accounts.",
     ),
-    context: TenantContext = Depends(get_tenant_context),
+    context: AccountContext = Depends(get_account_context),
     redis: Redis = Depends(get_redis),
 ):
     """
@@ -107,25 +107,25 @@ async def create_session(
     # Validate the sub-tenant before a session exists, so an invalid slug can
     # never be written into conversation logs.
     await context.attach_sub_tenant(restaurant_id)
-    tenant = context.tenant
+    account = context.account
     restaurant_id = context.restaurant_id
 
     session_manager = SessionManager(redis)
-    session_id = await session_manager.create_session(str(tenant.id))
+    session_id = await session_manager.create_session(str(account.id))
 
     # Get the created session data
     session = await session_manager.get_session(session_id)
 
     logger.info(
         "voice_session_created",
-        tenant_id=str(tenant.id),
+        account_id=str(account.id),
         session_id=session_id,
         restaurant_id=restaurant_id,
     )
 
     return SessionResponse(
         session_id=session_id,
-        tenant_id=tenant.id,
+        account_id=account.id,
         restaurant_id=restaurant_id,
         state="browsing",
         message_count=0,
@@ -142,7 +142,7 @@ async def create_session(
 )
 async def send_message(
     payload: VoiceMessageRequest,
-    context: TenantContext = Depends(get_tenant_context),
+    context: AccountContext = Depends(get_account_context),
     db: AsyncSession = Depends(get_db),
     redis: Redis = Depends(get_redis),
     _rate_limit: None = Depends(check_message_rate_limit),
@@ -154,12 +154,12 @@ async def send_message(
     Use POST /voice/audio for the full audio pipeline.
     """
     await context.attach_sub_tenant(payload.restaurant_id)
-    tenant = context.tenant
+    account = context.account
 
     try:
         engine = ConversationEngine(db=db, redis=redis)
         result = await engine.process_message(
-            tenant=tenant,
+            account=account,
             message=payload.text,
             session_id=payload.session_id,
             restaurant_id=context.restaurant_id,
@@ -167,7 +167,7 @@ async def send_message(
 
         logger.info(
             "voice_message_processed",
-            tenant_id=str(tenant.id),
+            account_id=str(account.id),
             session_id=result["session_id"],
             message_length=len(payload.text),
             response_length=len(result["text"]),
@@ -188,7 +188,7 @@ async def send_message(
     except ConversationEngineError as e:
         logger.error(
             "voice_message_engine_error",
-            tenant_id=str(tenant.id),
+            account_id=str(account.id),
             session_id=payload.session_id,
             error=str(e),
         )
@@ -199,7 +199,7 @@ async def send_message(
     except Exception as e:
         logger.error(
             "voice_message_unexpected_error",
-            tenant_id=str(tenant.id),
+            account_id=str(account.id),
             error_type=type(e).__name__,
             error=str(e),
         )
@@ -226,7 +226,7 @@ async def send_message(
 )
 async def send_audio_message(
     payload: VoiceAudioRequest,
-    context: TenantContext = Depends(get_tenant_context),
+    context: AccountContext = Depends(get_account_context),
     db: AsyncSession = Depends(get_db),
     redis: Redis = Depends(get_redis),
     _rate_limit: None = Depends(check_message_rate_limit),
@@ -241,7 +241,7 @@ async def send_audio_message(
     """
     # Validate the sub-tenant before spending money on STT.
     await context.attach_sub_tenant(payload.restaurant_id)
-    tenant = context.tenant
+    account = context.account
 
     speech = SpeechService()
 
@@ -263,7 +263,7 @@ async def send_audio_message(
 
         logger.info(
             "voice_audio_received",
-            tenant_id=str(tenant.id),
+            account_id=str(account.id),
             language=payload.language,
             audio_format=payload.audio_format,
             audio_size=len(audio_bytes),
@@ -279,7 +279,7 @@ async def send_audio_message(
         except SpeechServiceError as e:
             logger.error(
                 "voice_audio_stt_failed",
-                tenant_id=str(tenant.id),
+                account_id=str(account.id),
                 provider=e.provider,
                 error=str(e),
             )
@@ -290,7 +290,7 @@ async def send_audio_message(
 
         logger.info(
             "voice_audio_transcribed",
-            tenant_id=str(tenant.id),
+            account_id=str(account.id),
             language=payload.language,
             transcribed_text=transcribed_text[:100],
         )
@@ -298,7 +298,7 @@ async def send_audio_message(
         # ── Step 3: Process through ConversationEngine ───────
         engine = ConversationEngine(db=db, redis=redis)
         result = await engine.process_message(
-            tenant=tenant,
+            account=account,
             message=transcribed_text,
             session_id=payload.session_id,
             restaurant_id=context.restaurant_id,
@@ -311,13 +311,13 @@ async def send_audio_message(
             response_audio = await speech.synthesize(
                 text=ai_response_text,
                 language=payload.language,
-                **_tts_opts(tenant),
+                **_tts_opts(account),
             )
             response_audio_b64 = base64.b64encode(response_audio).decode("utf-8")
         except SpeechServiceError as e:
             logger.error(
                 "voice_audio_tts_failed",
-                tenant_id=str(tenant.id),
+                account_id=str(account.id),
                 provider=e.provider,
                 error=str(e),
             )
@@ -326,7 +326,7 @@ async def send_audio_message(
 
         logger.info(
             "voice_audio_complete",
-            tenant_id=str(tenant.id),
+            account_id=str(account.id),
             session_id=result["session_id"],
             language=payload.language,
             transcribed_length=len(transcribed_text),
@@ -355,7 +355,7 @@ async def send_audio_message(
     except ConversationEngineError as e:
         logger.error(
             "voice_audio_engine_error",
-            tenant_id=str(tenant.id),
+            account_id=str(account.id),
             session_id=payload.session_id,
             error=str(e),
         )
@@ -366,7 +366,7 @@ async def send_audio_message(
     except Exception as e:
         logger.error(
             "voice_audio_unexpected_error",
-            tenant_id=str(tenant.id),
+            account_id=str(account.id),
             error_type=type(e).__name__,
             error=str(e),
         )
@@ -391,7 +391,7 @@ async def send_audio_message(
 )
 async def get_session(
     session_id: str,
-    tenant: Tenant = Depends(get_current_tenant),
+    account: Account = Depends(get_current_account),
     redis: Redis = Depends(get_redis),
 ):
     """
@@ -409,11 +409,11 @@ async def get_session(
             detail="Session not found or expired",
         )
 
-    # Verify the session belongs to this tenant
-    if session.get("tenant_id") != str(tenant.id):
+    # Verify the session belongs to this account
+    if session.get("account_id") != str(account.id):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Session does not belong to this tenant",
+            detail="Session does not belong to this account",
         )
 
     history = session.get("history", [])
@@ -425,7 +425,7 @@ async def get_session(
 
     return SessionResponse(
         session_id=session_id,
-        tenant_id=tenant.id,
+        account_id=account.id,
         restaurant_id=session.get("restaurant_id"),
         state=state,
         message_count=len(history),
@@ -460,6 +460,7 @@ async def get_supported_languages():
 @router.websocket("/ws")
 async def voice_websocket(
     websocket: WebSocket,
+    account_id: str | None = Query(default=None, alias="account_id"),
     tenant_id: str | None = Query(default=None, alias="tenant_id"),
     api_key: str | None = Query(default=None, alias="api_key"),
     restaurant_id: str | None = Query(default=None, alias="restaurant_id"),
@@ -469,10 +470,10 @@ async def voice_websocket(
     WebSocket endpoint for real-time voice conversations.
 
     Connection:
-        ws://host/api/v1/voice/ws?tenant_id=UUID&api_key=KEY&restaurant_id=SLUG&language=ta
+        ws://host/api/v1/voice/ws?account_id=UUID&api_key=KEY&restaurant_id=SLUG&language=ta
 
     Authentication:
-        Tenant ID and API key are passed as query parameters
+        Account ID and API key are passed as query parameters
         (WebSocket doesn't support custom headers in browsers).
 
     Message Protocol (JSON):
@@ -493,15 +494,21 @@ async def voice_websocket(
             {"type": "session_ended", "message": "..."}
             {"type": "language_changed", "language": "...", "name": "..."}
     """
-    # ── Step 1: Validate tenant credentials ──────────────────
-    if not tenant_id or not api_key:
+    # ── Step 1: Validate account credentials ──────────────────
+    # `tenant_id` is the old name for this parameter and is still accepted.
+    # It is sitting in the HTML of every page that embedded the widget before
+    # the rename, where we cannot reach it; breaking those pages to tidy up a
+    # query string would be a poor trade. New callers should send account_id.
+    account_id = account_id or tenant_id
+
+    if not account_id or not api_key:
         await websocket.close(
             code=status.WS_1008_POLICY_VIOLATION,
-            reason="Missing tenant_id or api_key query parameters",
+            reason="Missing account_id or api_key query parameters",
         )
         return
 
-    # We need to resolve tenant manually (can't use Depends in WebSocket easily)
+    # We need to resolve account manually (can't use Depends in WebSocket easily)
     from app.database import async_session_factory
     from app.redis_client import get_redis_sync
 
@@ -513,28 +520,28 @@ async def voice_websocket(
 
     async with async_session_factory() as db:
         try:
-            # Resolve tenant
-            service = TenantService(db=db, redis=redis)
-            tenant = await service.get_tenant_by_api_key(api_key)
+            # Resolve account
+            service = AccountService(db=db, redis=redis)
+            account = await service.get_tenant_by_api_key(api_key)
 
-            if tenant is None:
+            if account is None:
                 await websocket.close(
                     code=status.WS_1008_POLICY_VIOLATION,
                     reason="Invalid API key",
                 )
                 return
 
-            if str(tenant.id) != tenant_id:
+            if str(account.id) != account_id:
                 await websocket.close(
                     code=status.WS_1008_POLICY_VIOLATION,
-                    reason="Tenant ID does not match API key",
+                    reason="Account ID does not match API key",
                 )
                 return
 
-            if not tenant.is_active:
+            if not account.is_active:
                 await websocket.close(
                     code=status.WS_1008_POLICY_VIOLATION,
-                    reason="Tenant account is deactivated",
+                    reason="Account account is deactivated",
                 )
                 return
 
@@ -550,15 +557,15 @@ async def voice_websocket(
         # Browsers cannot set custom headers on a WebSocket, so the slug arrives
         # as a query param. It still gets the same ownership check as every
         # other path — an unvalidated slug here would reopen the hole.
-        from app.middleware.tenant_context import TenantContext
+        from app.middleware.account_context import AccountContext
 
-        ws_context = TenantContext(tenant=tenant, db=db, redis=redis)
+        ws_context = AccountContext(account=account, db=db, redis=redis)
         try:
             await ws_context.attach_sub_tenant(restaurant_id)
         except HTTPException as e:
             logger.warning(
                 "websocket_sub_tenant_rejected",
-                tenant_id=str(tenant.id),
+                account_id=str(account.id),
                 slug=restaurant_id,
                 detail=e.detail,
             )
@@ -574,11 +581,11 @@ async def voice_websocket(
         await websocket.accept()
 
         session_manager = SessionManager(redis)
-        session_id = await session_manager.create_session(str(tenant.id))
+        session_id = await session_manager.create_session(str(account.id))
 
         logger.info(
             "websocket_connected",
-            tenant_id=str(tenant.id),
+            account_id=str(account.id),
             session_id=session_id,
             restaurant_id=restaurant_id,
             language=current_language,
@@ -595,15 +602,15 @@ async def voice_websocket(
 
         # Generate and send initial greeting
         import base64
-        greeting_text = tenant.voice_config.get("greeting") if tenant.voice_config else ""
+        greeting_text = account.voice_config.get("greeting") if account.voice_config else ""
         if not greeting_text:
-            greeting_text = f"Welcome to {tenant.name}. How can I help you today?"
+            greeting_text = f"Welcome to {account.name}. How can I help you today?"
             
         try:
             greeting_audio = await speech.synthesize(
                 text=greeting_text,
                 language=current_language,
-                **_tts_opts(tenant),
+                **_tts_opts(account),
             )
             greeting_audio_b64 = base64.b64encode(greeting_audio).decode("utf-8")
         except Exception as e:
@@ -673,7 +680,7 @@ async def voice_websocket(
 
                     logger.info(
                         "websocket_session_ended_by_user",
-                        tenant_id=str(tenant.id),
+                        account_id=str(account.id),
                         session_id=session_id,
                         message_count=message_count,
                     )
@@ -708,7 +715,7 @@ async def voice_websocket(
                         # Process through conversation engine
                         engine = ConversationEngine(db=db, redis=redis)
                         result = await engine.process_message(
-                            tenant=tenant,
+                            account=account,
                             message=transcribed_text,
                             session_id=session_id,
                             restaurant_id=restaurant_id,
@@ -745,7 +752,7 @@ async def voice_websocket(
                                 chunk_audio = await speech.synthesize(
                                     text=chunk,
                                     language=current_language,
-                                    **_tts_opts(tenant),
+                                    **_tts_opts(account),
                                 )
                                 chunk_b64 = base64.b64encode(chunk_audio).decode("utf-8")
                                 await websocket.send_json({
@@ -794,7 +801,7 @@ async def voice_websocket(
                     try:
                         engine = ConversationEngine(db=db, redis=redis)
                         result = await engine.process_message(
-                            tenant=tenant,
+                            account=account,
                             message=text,
                             session_id=session_id,
                             restaurant_id=restaurant_id,
@@ -830,7 +837,7 @@ async def voice_websocket(
                                 chunk_audio = await speech.synthesize(
                                     text=chunk,
                                     language=current_language,
-                                    **_tts_opts(tenant),
+                                    **_tts_opts(account),
                                 )
                                 chunk_b64 = base64.b64encode(chunk_audio).decode("utf-8")
                                 await websocket.send_json({
@@ -880,7 +887,7 @@ async def voice_websocket(
             # Client disconnected — save session and log analytics
             logger.info(
                 "websocket_disconnected",
-                tenant_id=str(tenant.id),
+                account_id=str(account.id),
                 session_id=session_id,
                 message_count=message_count,
                 duration_seconds=int(time.time() - start_time),
@@ -892,7 +899,7 @@ async def voice_websocket(
         except Exception as e:
             logger.error(
                 "websocket_fatal_error",
-                tenant_id=str(tenant.id),
+                account_id=str(account.id),
                 session_id=session_id,
                 error_type=type(e).__name__,
                 error=str(e),

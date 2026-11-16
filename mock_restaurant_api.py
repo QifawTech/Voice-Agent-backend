@@ -4,7 +4,7 @@ Mock Restaurant API — For Testing the Action Router
 A standalone FastAPI server that simulates a real restaurant's API endpoints.
 Follows the exact API contract from 01_system_design.md.
 
-Run this server on port 9000, then point a test tenant's api_base_url to
+Run this server on port 9000, then point a test account's api_base_url to
 http://localhost:9000 to test the full Action Router flow.
 
 Usage:

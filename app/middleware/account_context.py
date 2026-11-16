@@ -1,12 +1,12 @@
 """
-Voice Agent Platform — Tenant Context
+Voice Agent Platform — Account Context
 
-Resolves a widget request down to "which tenant, and which sub-tenant?", and
+Resolves a widget request down to "which account, and which sub-tenant?", and
 carries the display config the voice agent should actually use.
 
-Why this exists alongside get_current_tenant:
-    get_current_tenant answers "who is this account?" and is used by the rate
-    limiter and the older voice routes. It returns a bare Tenant and must keep
+Why this exists alongside get_current_account:
+    get_current_account answers "who is this account?" and is used by the rate
+    limiter and the older voice routes. It returns a bare Account and must keep
     doing so. This module answers the newer question — "and which of their
     sub-tenants is this call for?" — without changing that contract.
 
@@ -14,7 +14,7 @@ The security gap this closes:
     Until now `restaurant_id` was an unvalidated free string from the widget.
     Any value was accepted and written straight into the logs, including one
     belonging to a different account. Every sub-tenant is now looked up and
-    checked against the resolved tenant before it is used.
+    checked against the resolved account before it is used.
 
 Two ways a sub-tenant arrives, because the widget is mid-migration:
     1. X-Sub-Tenant-ID header   — the new way (item 28)
@@ -31,21 +31,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.logger import get_logger
-from app.middleware.tenant_resolver import get_current_tenant
+from app.middleware.account_resolver import get_current_account
 from app.models.sub_tenant import SubTenant
-from app.models.tenant import Tenant
+from app.models.account import Account
 from app.redis_client import get_redis
 from app.services.sub_tenant_service import SubTenantService
-from app.services.tenant_service import resolve_display_config
+from app.services.account_service import resolve_display_config
 
 logger = get_logger(__name__)
 
 
 @dataclass
-class TenantContext:
+class AccountContext:
     """A resolved widget request: the account, the sub-tenant, and the config."""
 
-    tenant: Tenant
+    account: Account
     db: AsyncSession
     redis: Redis | None = None
     sub_tenant: SubTenant | None = None
@@ -53,7 +53,7 @@ class TenantContext:
 
     @property
     def is_multi(self) -> bool:
-        return self.tenant.tenancy_type == "multi"
+        return self.account.tenancy_type == "multi"
 
     @property
     def restaurant_id(self) -> str | None:
@@ -65,7 +65,7 @@ class TenantContext:
         return self.sub_tenant.id if self.sub_tenant else None
 
     def refresh_config(self) -> dict:
-        self.display_config = resolve_display_config(self.tenant, self.sub_tenant)
+        self.display_config = resolve_display_config(self.account, self.sub_tenant)
         return self.display_config
 
     async def attach_sub_tenant(self, slug: str | None) -> None:
@@ -105,13 +105,13 @@ class TenantContext:
             )
 
         service = SubTenantService(db=self.db, redis=self.redis)
-        row = await service.get_by_slug(self.tenant.id, slug)
+        row = await service.get_by_slug(self.account.id, slug)
 
         if row is None:
             logger.warning(
                 "sub_tenant_resolution_failed",
-                reason="not_found_for_tenant",
-                tenant_id=str(self.tenant.id),
+                reason="not_found_for_account",
+                account_id=str(self.account.id),
                 slug=slug,
             )
             raise HTTPException(
@@ -123,7 +123,7 @@ class TenantContext:
             logger.warning(
                 "sub_tenant_resolution_failed",
                 reason="inactive",
-                tenant_id=str(self.tenant.id),
+                account_id=str(self.account.id),
                 slug=slug,
             )
             raise HTTPException(
@@ -136,26 +136,26 @@ class TenantContext:
 
         logger.info(
             "sub_tenant_resolved",
-            tenant_id=str(self.tenant.id),
+            account_id=str(self.account.id),
             sub_tenant_id=str(row.id),
             slug=row.slug,
         )
 
 
-async def get_tenant_context(
+async def get_account_context(
     x_sub_tenant_id: str | None = Header(default=None, alias="X-Sub-Tenant-ID"),
-    tenant: Tenant = Depends(get_current_tenant),
+    account: Account = Depends(get_current_account),
     db: AsyncSession = Depends(get_db),
     redis: Redis = Depends(get_redis),
-) -> TenantContext:
+) -> AccountContext:
     """
-    FastAPI dependency: resolve tenant + sub-tenant for a widget request.
+    FastAPI dependency: resolve account + sub-tenant for a widget request.
 
     The header is resolved here when present. When it is absent, resolution is
     deferred so the route can supply the slug from its body — the route must
     then call `await context.attach_sub_tenant(slug)`, which enforces the rest.
     """
-    context = TenantContext(tenant=tenant, db=db, redis=redis)
+    context = AccountContext(account=account, db=db, redis=redis)
     context.refresh_config()
 
     if x_sub_tenant_id:

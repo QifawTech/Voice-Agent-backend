@@ -13,7 +13,7 @@ separate from sending is what makes both of those additions local changes.
 
 The tone rule, which holds for every channel: this is a service message, never
 marketing. A reminder that reads like an advertisement is what gets a sender
-reported, and a reported sender takes down every tenant on the platform.
+reported, and a reported sender takes down every account on the platform.
 """
 
 from dataclasses import dataclass

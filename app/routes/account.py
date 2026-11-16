@@ -1,14 +1,14 @@
 """
-Voice Agent Platform — Tenant Routes
+Voice Agent Platform — Account Routes
 
-API endpoints for tenant (restaurant/platform) management:
-    POST   /api/v1/tenants                     — Create a new tenant
-    GET    /api/v1/tenants                      — List tenants
-    GET    /api/v1/tenants/{id}                 — Get tenant details
-    PUT    /api/v1/tenants/{id}                 — Update tenant config
-    POST   /api/v1/tenants/{id}/regenerate-key  — Generate new widget API key
-    POST   /api/v1/tenants/{id}/test-connection — Test restaurant API connection
-    GET    /api/v1/tenants/{id}/embed-code      — Get widget embed code
+API endpoints for account (restaurant/platform) management:
+    POST   /api/v1/accounts                     — Create a new account
+    GET    /api/v1/accounts                      — List accounts
+    GET    /api/v1/accounts/{id}                 — Get account details
+    PUT    /api/v1/accounts/{id}                 — Update account config
+    POST   /api/v1/accounts/{id}/regenerate-key  — Generate new widget API key
+    POST   /api/v1/accounts/{id}/test-connection — Test restaurant API connection
+    GET    /api/v1/accounts/{id}/embed-code      — Get widget embed code
 
 All routes require JWT authentication.
 """
@@ -25,27 +25,27 @@ from app.logger import get_logger
 from app.middleware.auth import get_current_user
 from app.models.admin_user import AdminUser
 from app.redis_client import get_redis
-from app.schemas.tenant import (
-    TenantCreate,
-    TenantListResponse,
-    TenantResponse,
-    TenantUpdate,
+from app.schemas.account import (
+    AccountCreate,
+    AccountListResponse,
+    AccountResponse,
+    AccountUpdate,
 )
-from app.services.tenant_service import TenantService
+from app.services.account_service import AccountService
 
 logger = get_logger(__name__)
 
-router = APIRouter(prefix="/api/v1/tenants", tags=["Tenants"])
+router = APIRouter(prefix="/api/v1/accounts", tags=["Accounts"])
 
 
-# ---- Helper: Get TenantService instance ----
+# ---- Helper: Get AccountService instance ----
 
 def _get_service(
     db: AsyncSession = Depends(get_db),
     redis: Redis = Depends(get_redis),
-) -> TenantService:
-    """Create a TenantService with injected dependencies."""
-    return TenantService(db=db, redis=redis)
+) -> AccountService:
+    """Create a AccountService with injected dependencies."""
+    return AccountService(db=db, redis=redis)
 
 
 # ----------------------------------------------------------------
@@ -54,28 +54,28 @@ def _get_service(
 
 @router.post(
     "",
-    response_model=TenantResponse,
+    response_model=AccountResponse,
     status_code=status.HTTP_201_CREATED,
-    summary="Create Tenant",
-    description="Register a new restaurant/platform tenant on the Voice Agent platform.",
+    summary="Create Account",
+    description="Register a new restaurant/platform account on the Voice Agent platform.",
 )
-async def create_tenant(
-    payload: TenantCreate,
+async def create_account(
+    payload: AccountCreate,
     current_user: AdminUser = Depends(get_current_user),
-    service: TenantService = Depends(_get_service),
+    service: AccountService = Depends(_get_service),
 ):
     """
-    Create a new tenant.
+    Create a new account.
 
-    - Refuses with 409 if this admin already has one (one account, one tenant)
+    - Refuses with 409 if this admin already has one (one admin, one account)
     - Validates slug uniqueness
     - Generates a widget API key
     - Encrypts API auth token if provided
-    - Associates the creating admin with the tenant
+    - Associates the creating admin with the account
     """
     try:
-        tenant = await service.create_tenant(payload, current_user)
-        return tenant
+        account = await service.create_account(payload, current_user)
+        return account
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -89,29 +89,29 @@ async def create_tenant(
 
 @router.get(
     "",
-    response_model=TenantListResponse,
-    summary="List Tenants",
-    description="List all tenants. Tenant admins see only their own tenant.",
+    response_model=AccountListResponse,
+    summary="List Accounts",
+    description="List all accounts. Account admins see only their own account.",
 )
-async def list_tenants(
+async def list_accounts(
     page: int = Query(default=1, ge=1, description="Page number"),
     page_size: int = Query(default=20, ge=1, le=100, description="Items per page"),
     current_user: AdminUser = Depends(get_current_user),
-    service: TenantService = Depends(_get_service),
+    service: AccountService = Depends(_get_service),
 ):
     """
-    List tenants with pagination.
+    List accounts with pagination.
 
-    Super admins see all tenants. Tenant admins see only their assigned tenant.
+    Super admins see all accounts. Account admins see only their assigned account.
     """
-    tenants, total = await service.list_tenants(
+    accounts, total = await service.list_accounts(
         admin_user=current_user,
         page=page,
         page_size=page_size,
     )
 
-    return TenantListResponse(
-        tenants=[TenantResponse.model_validate(t) for t in tenants],
+    return AccountListResponse(
+        accounts=[AccountResponse.model_validate(t) for t in accounts],
         total=total,
         page=page,
         page_size=page_size,
@@ -123,28 +123,28 @@ async def list_tenants(
 # ----------------------------------------------------------------
 
 @router.get(
-    "/{tenant_id}",
-    response_model=TenantResponse,
-    summary="Get Tenant",
-    description="Get details of a specific tenant.",
+    "/{account_id}",
+    response_model=AccountResponse,
+    summary="Get Account",
+    description="Get details of a specific account.",
 )
-async def get_tenant(
-    tenant_id: UUID,
+async def get_account(
+    account_id: UUID,
     current_user: AdminUser = Depends(get_current_user),
-    service: TenantService = Depends(_get_service),
+    service: AccountService = Depends(_get_service),
 ):
     """
-    Get a single tenant by ID.
+    Get a single account by ID.
 
-    Tenant admins can only view their own tenant.
+    Account admins can only view their own account.
     """
-    tenant = await service.get_tenant(tenant_id, current_user)
-    if tenant is None:
+    account = await service.get_account(account_id, current_user)
+    if account is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Tenant not found",
+            detail="Account not found",
         )
-    return tenant
+    return account
 
 
 # ----------------------------------------------------------------
@@ -152,19 +152,19 @@ async def get_tenant(
 # ----------------------------------------------------------------
 
 @router.put(
-    "/{tenant_id}",
-    response_model=TenantResponse,
-    summary="Update Tenant",
-    description="Update a tenant's configuration. Only provided fields are updated.",
+    "/{account_id}",
+    response_model=AccountResponse,
+    summary="Update Account",
+    description="Update a account's configuration. Only provided fields are updated.",
 )
-async def update_tenant(
-    tenant_id: UUID,
-    payload: TenantUpdate,
+async def update_account(
+    account_id: UUID,
+    payload: AccountUpdate,
     current_user: AdminUser = Depends(get_current_user),
-    service: TenantService = Depends(_get_service),
+    service: AccountService = Depends(_get_service),
 ):
     """
-    Update a tenant's configuration.
+    Update a account's configuration.
 
     Partial update — only fields included in the request body are changed.
 
@@ -172,18 +172,18 @@ async def update_tenant(
     the account still has active sub-tenants.
     """
     try:
-        tenant = await service.update_tenant(tenant_id, payload, current_user)
+        account = await service.update_account(account_id, payload, current_user)
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=str(e),
         )
-    if tenant is None:
+    if account is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Tenant not found",
+            detail="Account not found",
         )
-    return tenant
+    return account
 
 
 # ----------------------------------------------------------------
@@ -191,36 +191,36 @@ async def update_tenant(
 # ----------------------------------------------------------------
 
 @router.post(
-    "/{tenant_id}/regenerate-key",
-    response_model=TenantResponse,
+    "/{account_id}/regenerate-key",
+    response_model=AccountResponse,
     summary="Regenerate Widget API Key",
     description="Generate a new widget API key. The old key becomes immediately invalid.",
 )
 async def regenerate_api_key(
-    tenant_id: UUID,
+    account_id: UUID,
     current_user: AdminUser = Depends(get_current_user),
-    service: TenantService = Depends(_get_service),
+    service: AccountService = Depends(_get_service),
 ):
     """
-    Regenerate the widget API key for a tenant.
+    Regenerate the widget API key for a account.
 
     ⚠️ This invalidates the old key immediately. Any widgets using the
     old key will stop working until they're updated.
     """
-    tenant = await service.regenerate_api_key(tenant_id, current_user)
-    if tenant is None:
+    account = await service.regenerate_api_key(account_id, current_user)
+    if account is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Tenant not found",
+            detail="Account not found",
         )
 
     logger.info(
         "api_key_regenerated_via_api",
-        tenant_id=str(tenant_id),
+        account_id=str(account_id),
         by_user=str(current_user.id),
     )
 
-    return tenant
+    return account
 
 
 # ----------------------------------------------------------------
@@ -228,14 +228,14 @@ async def regenerate_api_key(
 # ----------------------------------------------------------------
 
 @router.post(
-    "/{tenant_id}/test-connection",
+    "/{account_id}/test-connection",
     summary="Test API Connection",
-    description="Test if the tenant's restaurant API is reachable and responding correctly.",
+    description="Test if the account's restaurant API is reachable and responding correctly.",
 )
 async def test_api_connection(
-    tenant_id: UUID,
+    account_id: UUID,
     current_user: AdminUser = Depends(get_current_user),
-    service: TenantService = Depends(_get_service),
+    service: AccountService = Depends(_get_service),
 ):
     """
     Test the restaurant API connection.
@@ -245,7 +245,7 @@ async def test_api_connection(
     - response_time_ms: round-trip time in milliseconds
     - error: error message if failed
     """
-    result = await service.test_api_connection(tenant_id, current_user)
+    result = await service.test_api_connection(account_id, current_user)
     return result
 
 
@@ -254,32 +254,32 @@ async def test_api_connection(
 # ----------------------------------------------------------------
 
 @router.get(
-    "/{tenant_id}/embed-code",
+    "/{account_id}/embed-code",
     summary="Get Widget Embed Code",
     description="Get the HTML embed code snippet for the voice agent widget.",
 )
 async def get_embed_code(
-    tenant_id: UUID,
+    account_id: UUID,
     current_user: AdminUser = Depends(get_current_user),
-    service: TenantService = Depends(_get_service),
+    service: AccountService = Depends(_get_service),
 ):
     """
-    Generate the widget embed code for a tenant.
+    Generate the widget embed code for a account.
 
     Returns an HTML snippet that restaurant owners can paste
     into their website to enable the voice ordering widget.
     """
-    tenant = await service.get_tenant(tenant_id, current_user)
-    if tenant is None:
+    account = await service.get_account(account_id, current_user)
+    if account is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Tenant not found",
+            detail="Account not found",
         )
 
-    if not tenant.widget_api_key:
+    if not account.widget_api_key:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Tenant has no widget API key. Create one first.",
+            detail="Account has no widget API key. Create one first.",
         )
 
     settings = get_settings()
@@ -291,5 +291,5 @@ async def get_embed_code(
         else "https://widget.voiceagent.io"
     )
 
-    embed_data = service.generate_embed_code(tenant, widget_host)
+    embed_data = service.generate_embed_code(account, widget_host)
     return embed_data

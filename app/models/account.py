@@ -1,17 +1,29 @@
 """
-Voice Agent Platform — Tenant Model
+Voice Agent Platform — Account Model
 
-Represents a platform or business registered on the Voice Agent service.
-A tenant can be:
+An account is someone who signed up. That is all it means.
+
+It used to be called a Account, which meant "a business that has customers" —
+true for Spice Garden, false for a son in Chennai who signed up only to be
+reminded about his mother's tablets. He has no customers and no api_base_url.
+Calling his row a account told the next reader something that was not so.
+
+What an account owns depends on what it is for:
 - A multi-restaurant platform like SOPZY  (tenancy_type="multi", many SubTenants)
 - A standalone single-restaurant website  (tenancy_type="single", no SubTenants)
+- A person with reminders and nothing else (no sub-tenants, no API at all)
 
 The API connection (api_base_url + api_auth_token) always lives HERE, even for
 multi-tenant customers — there is only one API per account. Sub-tenants are
 selected by sending their slug to that API as `?restaurantId=<slug>`.
 
+Note that SubTenant keeps its name on purpose. It means "one account *of* a
+multi-tenant customer" — one restaurant inside SOPZY — and that is the right
+word for that thing.
+
 Relationships:
     - Has many AdminUsers
+    - Has many Agents (the jobs the voice engine does for it)
     - Has many SubTenants (multi-tenant accounts only)
     - Has many TenantTools (the function tools its agent can call)
     - Has many ConversationLogs
@@ -29,10 +41,10 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database import Base
 
 
-class Tenant(Base):
-    """Platform/business tenant configuration."""
+class Account(Base):
+    """One signed-up account, and everything configured on it."""
 
-    __tablename__ = "tenants"
+    __tablename__ = "accounts"
 
     # ---- Primary Key ----
     id: Mapped[uuid.UUID] = mapped_column(
@@ -95,9 +107,9 @@ class Tenant(Base):
     )
 
     # ---- Relationships ----
-    admin_users = relationship("AdminUser", back_populates="tenant", lazy="selectin")
-    # The agents this account owns. A restaurant tenant has no rows here and is
-    # unaffected; see app/models/agent.py on why account_id points at tenants.id.
+    admin_users = relationship("AdminUser", back_populates="account", lazy="selectin")
+    # The agents this account owns. A restaurant account has no rows here and
+    # is unaffected.
     agents = relationship(
         "Agent",
         back_populates="account",
@@ -106,33 +118,33 @@ class Tenant(Base):
     )
     sub_tenants = relationship(
         "SubTenant",
-        back_populates="tenant",
+        back_populates="account",
         lazy="selectin",
         cascade="all, delete-orphan",
     )
     tools = relationship(
         "TenantTool",
-        back_populates="tenant",
+        back_populates="account",
         lazy="selectin",
         cascade="all, delete-orphan",
     )
     conversation_logs = relationship(
-        "ConversationLog", back_populates="tenant", lazy="selectin"
+        "ConversationLog", back_populates="account", lazy="selectin"
     )
-    order_events = relationship("OrderEvent", back_populates="tenant", lazy="selectin")
+    order_events = relationship("OrderEvent", back_populates="account", lazy="selectin")
     daily_analytics = relationship(
-        "DailyAnalytics", back_populates="tenant", lazy="selectin"
+        "DailyAnalytics", back_populates="account", lazy="selectin"
     )
 
     # ---- Indexes ----
     __table_args__ = (
-        Index("ix_tenants_platform", "platform"),
-        Index("ix_tenants_is_active", "is_active"),
-        Index("ix_tenants_tenancy_type", "tenancy_type"),
+        Index("ix_accounts_platform", "platform"),
+        Index("ix_accounts_is_active", "is_active"),
+        Index("ix_accounts_tenancy_type", "tenancy_type"),
     )
 
     def __repr__(self) -> str:
         return (
-            f"<Tenant(id={self.id}, name='{self.name}', "
+            f"<Account(id={self.id}, name='{self.name}', "
             f"platform='{self.platform}', tenancy='{self.tenancy_type}')>"
         )

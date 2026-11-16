@@ -5,8 +5,8 @@ Logs every voice conversation for analytics and debugging.
 Each row represents a complete conversation session between
 a customer and the AI voice agent.
 
-The restaurant_id identifies which specific restaurant (within a tenant)
-the conversation belongs to. For standalone tenants, this may be null.
+The restaurant_id identifies which specific restaurant (within a account)
+the conversation belongs to. For standalone accounts, this may be null.
 """
 
 import uuid
@@ -31,17 +31,17 @@ class ConversationLog(Base):
         default=uuid.uuid4,
     )
 
-    # ---- Tenant Association ----
-    tenant_id: Mapped[uuid.UUID] = mapped_column(
+    # ---- Account Association ----
+    account_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("tenants.id", ondelete="CASCADE"),
+        ForeignKey("accounts.id", ondelete="CASCADE"),
         nullable=False,
     )
 
     # ---- Restaurant Identification ----
     restaurant_id: Mapped[str | None] = mapped_column(
         String(255), nullable=True
-    )  # e.g., "spice-garden" — sent by widget, identifies restaurant within tenant
+    )  # e.g., "spice-garden" — sent by widget, identifies restaurant within account
 
     # ---- Sub-Tenant Link ----
     # Proper FK for the sub-tenant. restaurant_id above is kept in sync with
@@ -81,11 +81,11 @@ class ConversationLog(Base):
     )
 
     # ---- Relationships ----
-    tenant = relationship("Tenant", back_populates="conversation_logs")
+    account = relationship("Account", back_populates="conversation_logs")
 
     # ---- Indexes ----
     __table_args__ = (
-        Index("ix_conversation_logs_tenant_id", "tenant_id"),
+        Index("ix_conversation_logs_account_id", "account_id"),
         Index("ix_conversation_logs_restaurant_id", "restaurant_id"),
         Index("ix_conversation_logs_sub_tenant_id", "sub_tenant_id"),
         Index("ix_conversation_logs_session_id", "session_id"),

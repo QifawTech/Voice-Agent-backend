@@ -3,7 +3,7 @@ Voice Agent Platform — Person Model
 
 The thing the platform had no concept of: someone who receives a message but is
 not a user. A mother getting a medicine reminder has no login, no password and
-no app. She is not a tenant and not an admin.
+no app. She is not a account and not an admin.
 
 Everything that decides *how* to reach someone lives here rather than on the
 reminder, because it belongs to the person: her language, her timezone, the
@@ -16,7 +16,7 @@ Two fields carry most of the legal and reputational weight of this product:
 
 opted_out_at is read-only to business owners by design. The plan is explicit:
 if an owner can re-enable someone who said STOP, the platform's WhatsApp sender
-gets reported, and that takes down every other tenant — not just his. No route
+gets reported, and that takes down every other account — not just his. No route
 in this product may ever clear it.
 
 Relationships:

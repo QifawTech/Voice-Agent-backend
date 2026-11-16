@@ -8,7 +8,7 @@ Configures structlog for consistent, structured logging across the application.
 Usage:
     from app.logger import get_logger
     logger = get_logger(__name__)
-    logger.info("user_registered", email="user@example.com", tenant_id="tn_001")
+    logger.info("user_registered", email="user@example.com", account_id="tn_001")
 """
 
 import logging

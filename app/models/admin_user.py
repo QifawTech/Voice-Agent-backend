@@ -1,9 +1,9 @@
 """
 Voice Agent Platform — AdminUser Model
 
-Represents an admin user who manages tenants on the platform.
-- Super admins (tenant_id=NULL) can manage all tenants.
-- Tenant admins are scoped to a single tenant.
+Represents an admin user who manages accounts on the platform.
+- Super admins (account_id=NULL) can manage all accounts.
+- Account admins are scoped to a single account.
 
 Used by the auth system (Day 4) for registration, login, and JWT.
 """
@@ -37,11 +37,11 @@ class AdminUser(Base):
     hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
     full_name: Mapped[str] = mapped_column(String(255), nullable=False)
 
-    # ---- Tenant Association ----
-    tenant_id: Mapped[uuid.UUID | None] = mapped_column(
+    # ---- Account Association ----
+    account_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("tenants.id", ondelete="SET NULL"),
-        nullable=True,  # NULL = super-admin with access to all tenants
+        ForeignKey("accounts.id", ondelete="SET NULL"),
+        nullable=True,  # NULL = super-admin with access to all accounts
     )
     role: Mapped[str] = mapped_column(
         String(50), nullable=False, default="tenant_admin"
@@ -67,11 +67,11 @@ class AdminUser(Base):
     )
 
     # ---- Relationships ----
-    tenant = relationship("Tenant", back_populates="admin_users")
+    account = relationship("Account", back_populates="admin_users")
 
     # ---- Indexes ----
     __table_args__ = (
-        Index("ix_admin_users_tenant_id", "tenant_id"),
+        Index("ix_admin_users_account_id", "account_id"),
         Index("ix_admin_users_role", "role"),
     )
 

@@ -5,7 +5,7 @@ API endpoint to generate LiveKit room tokens for the frontend widget.
 
     POST /api/v1/livekit/token — Generate a room token for a participant
 
-The frontend calls this endpoint with tenant credentials and receives a JWT
+The frontend calls this endpoint with account credentials and receives a JWT
 token that allows it to connect directly to the LiveKit room via WebRTC.
 
 The LiveKit agent worker (running as a separate process) is automatically
@@ -23,9 +23,9 @@ from redis.asyncio import Redis
 
 from app.config import get_settings
 from app.logger import get_logger
-from app.middleware.tenant_context import TenantContext, get_tenant_context
-from app.middleware.tenant_resolver import get_current_tenant
-from app.models.tenant import Tenant
+from app.middleware.account_context import AccountContext, get_account_context
+from app.middleware.account_resolver import get_current_account
+from app.models.account import Account
 from app.redis_client import get_redis
 
 logger = get_logger(__name__)
@@ -78,7 +78,7 @@ class LiveKitTokenRequest(BaseModel):
         default=None,
         description=(
             "Preferred language for the voice conversation (english, telugu, tamil, "
-            "kannada, malayalam). When omitted, the tenant's configured default "
+            "kannada, malayalam). When omitted, the account's configured default "
             "language (voice_config.language) is used, falling back to english."
         ),
     )
@@ -87,7 +87,7 @@ class LiveKitTokenRequest(BaseModel):
         description=(
             "TTS provider preference: 'deepgram'/'openrouter' for English, or "
             "'elevenlabs' to use ElevenLabs for ANY language. When omitted, the "
-            "tenant's configured provider (voice_config.tts_provider) is used, "
+            "account's configured provider (voice_config.tts_provider) is used, "
             "falling back to 'deepgram'."
         ),
     )
@@ -95,7 +95,7 @@ class LiveKitTokenRequest(BaseModel):
         default=None,
         description=(
             "TTS model id. Only used for ElevenLabs (e.g. 'eleven_multilingual_v2', "
-            "'eleven_flash_v2_5'). When omitted, the tenant's configured model "
+            "'eleven_flash_v2_5'). When omitted, the account's configured model "
             "(voice_config.elevenlabs_model) is used, else the server default."
         ),
     )
@@ -103,7 +103,7 @@ class LiveKitTokenRequest(BaseModel):
         default=None,
         description=(
             "Agent voice to speak with: 'female' or 'male'. When omitted, the "
-            "tenant's configured default (voice_config.voice_gender) is used, "
+            "account's configured default (voice_config.voice_gender) is used, "
             "falling back to 'female'. Ignored when an explicit `voice` is set."
         ),
     )
@@ -112,7 +112,7 @@ class LiveKitTokenRequest(BaseModel):
         description=(
             "Explicit TTS voice id for the chosen language — a Sarvam bulbul:v3 "
             "speaker (e.g. 'priya') for Indian languages, or a Deepgram Aura "
-            "model (e.g. 'aura-luna-en') for English. When omitted, the tenant's "
+            "model (e.g. 'aura-luna-en') for English. When omitted, the account's "
             "configured voice for that language (voice_config.voices[language]) "
             "is used, else the voice_gender default."
         ),
@@ -123,7 +123,7 @@ class LiveKitTokenRequest(BaseModel):
         le=2.0,
         description=(
             "Speaking pace (speed): 1.0 is normal, below 1.0 slower, above 1.0 "
-            "faster. Range 0.5–2.0. When omitted, the tenant's configured pace "
+            "faster. Range 0.5–2.0. When omitted, the account's configured pace "
             "(voice_config.pace) is used, else 1.0."
         ),
     )
@@ -136,7 +136,7 @@ class LiveKitTokenRequest(BaseModel):
     )
     sub_tenant_id: str | None = Field(
         default=None,
-        description="Sub-tenant slug identifying which tenant this call is for.",
+        description="Sub-tenant slug identifying which account this call is for.",
     )
     room: str | None = Field(
         default=None,
@@ -146,10 +146,10 @@ class LiveKitTokenRequest(BaseModel):
         default=None,
         description=(
             "Free-form per-call values supplied by the client (e.g. the phone): "
-            "customer_name, lat, lng, and anything a tenant's own tools expect. "
+            "customer_name, lat, lng, and anything a account's own tools expect. "
             "Each key K is exposed to tool templates as {context_K}. Values are "
             "carried through untouched and NOT validated by the platform; the "
-            "tenant's API must treat them as untrusted. Strings only; sanitised "
+            "account's API must treat them as untrusted. Strings only; sanitised "
             "and capped before use (see _sanitize_context)."
         ),
     )
@@ -175,50 +175,50 @@ class LiveKitTokenResponse(BaseModel):
     description=(
         "Generate a JWT token that allows the frontend widget to connect to a "
         "LiveKit room for real-time voice conversation. The token includes "
-        "participant metadata (tenant, language, etc.) that the LiveKit agent "
-        "worker reads to configure STT/TTS and resolve the tenant."
+        "participant metadata (account, language, etc.) that the LiveKit agent "
+        "worker reads to configure STT/TTS and resolve the account."
     ),
 )
 async def generate_livekit_token(
     payload: LiveKitTokenRequest,
-    context: TenantContext = Depends(get_tenant_context),
+    context: AccountContext = Depends(get_account_context),
     redis: Redis = Depends(get_redis),
 ):
     """
     Generate a LiveKit room token for the frontend.
 
     Flow:
-        1. Validate tenant credentials (via get_current_tenant dependency)
+        1. Validate account credentials (via get_current_account dependency)
         2. Generate a unique room name (or use the provided one)
         3. Create a JWT token with:
            - Participant identity (name + random suffix)
            - Room join grant
-           - Metadata (tenant_id, api_key, language, restaurant_id, etc.)
+           - Metadata (account_id, api_key, language, restaurant_id, etc.)
         4. Return the token + room name + LiveKit URL
     """
     settings = get_settings()
     handler_t0 = time.perf_counter()
 
     # Resolve and VALIDATE the sub-tenant before issuing a token. The header
-    # (handled in get_tenant_context) wins; otherwise fall back to the body.
+    # (handled in get_account_context) wins; otherwise fall back to the body.
     # This raises 401 for an unknown slug, a slug belonging to another account,
     # or a missing slug on a multi-tenant account.
     subtenant_t0 = time.perf_counter()
     await context.attach_sub_tenant(payload.sub_tenant_id or payload.restaurant_id)
     subtenant_ms = (time.perf_counter() - subtenant_t0) * 1000
 
-    tenant = context.tenant
+    account = context.account
     config = context.display_config
 
     # Resolve the language to speak. An explicit value from the caller (e.g. the
     # widget's data-language or the in-call switcher) wins; otherwise fall back
-    # to the tenant's configured default (set in the dashboard Voice Config tab),
+    # to the account's configured default (set in the dashboard Voice Config tab),
     # and finally to english.
     tenant_voice_config = config.get("voice_config") or {}
     tenant_default_language = tenant_voice_config.get("language")
     effective_language = (payload.language or tenant_default_language or "english").lower()
 
-    # Same precedence for the voice: explicit request wins, else the tenant's
+    # Same precedence for the voice: explicit request wins, else the account's
     # configured default, else female.
     tenant_default_voice = tenant_voice_config.get("voice_gender")
     effective_voice_gender = (
@@ -227,7 +227,7 @@ async def generate_livekit_token(
         else "female"
     )
 
-    # TTS provider: explicit request wins, else the tenant's configured provider
+    # TTS provider: explicit request wins, else the account's configured provider
     # (set in the dashboard Voice Config tab), else deepgram. "elevenlabs" makes
     # the agent use ElevenLabs for EVERY language, bypassing Sarvam/Deepgram.
     effective_tts_provider = (
@@ -235,7 +235,7 @@ async def generate_livekit_token(
     ).lower()
 
     # Explicit named voice for this language: caller's choice wins, else the
-    # tenant's configured per-language voice (voice_config.voices[language]).
+    # account's configured per-language voice (voice_config.voices[language]).
     tenant_voices = tenant_voice_config.get("voices") or {}
     effective_voice = payload.voice or tenant_voices.get(effective_language)
 
@@ -253,7 +253,7 @@ async def generate_livekit_token(
             payload.tts_model or tenant_voice_config.get("elevenlabs_model") or None
         )
 
-    # Speaking pace: explicit request wins, else the tenant's configured pace,
+    # Speaking pace: explicit request wins, else the account's configured pace,
     # else 1.0 (normal). Clamped to the range bulbul:v3 accepts.
     try:
         raw_pace = payload.pace if payload.pace is not None else tenant_voice_config.get("pace", 1.0)
@@ -262,17 +262,17 @@ async def generate_livekit_token(
         effective_pace = 1.0
 
     # Generate room name
-    room_name = payload.room or f"voice-{tenant.id}-{int(time.time())}-{uuid.uuid4().hex[:6]}"
+    room_name = payload.room or f"voice-{account.id}-{int(time.time())}-{uuid.uuid4().hex[:6]}"
 
     # Generate participant identity
     participant_identity = f"{payload.participant_name}-{uuid.uuid4().hex[:6]}"
 
     # Build participant metadata — the LiveKit agent reads this
-    # to configure STT/TTS, resolve tenant, and set up tools
+    # to configure STT/TTS, resolve account, and set up tools
     metadata = json.dumps({
-        "tenant_id": str(tenant.id),
-        "api_key": _get_tenant_widget_api_key(tenant),
-        "tenant_name": tenant.name,
+        "account_id": str(account.id),
+        "api_key": _get_tenant_widget_api_key(account),
+        "tenant_name": account.name,
         # Resolved and validated — never the raw value from the widget.
         "restaurant_id": context.restaurant_id,
         "sub_tenant_id": str(context.sub_tenant_id) if context.sub_tenant_id else None,
@@ -322,7 +322,7 @@ async def generate_livekit_token(
     except Exception as e:
         logger.error(
             "livekit_token_generation_error",
-            tenant_id=str(tenant.id),
+            account_id=str(account.id),
             error_type=type(e).__name__,
             error=str(e),
         )
@@ -340,8 +340,8 @@ async def generate_livekit_token(
 
     logger.info(
         "livekit_token_generated",
-        tenant_id=str(tenant.id),
-        tenant_name=tenant.name,
+        account_id=str(account.id),
+        tenant_name=account.name,
         room=room_name,
         participant=participant_identity,
         language=effective_language,
@@ -399,15 +399,15 @@ async def livekit_health():
 # ──────────────────────────────────────────────────────────────
 
 
-def _get_tenant_widget_api_key(tenant: Tenant) -> str:
+def _get_tenant_widget_api_key(account: Account) -> str:
     """
-    Extract the widget API key from the tenant model.
+    Extract the widget API key from the account model.
 
-    The widget API key is used by the LiveKit agent to verify the tenant
+    The widget API key is used by the LiveKit agent to verify the account
     when it resolves the participant metadata.
     """
-    if hasattr(tenant, "api_key"):
-        return str(tenant.api_key)
-    if hasattr(tenant, "widget_api_key"):
-        return str(tenant.widget_api_key)
+    if hasattr(account, "api_key"):
+        return str(account.api_key)
+    if hasattr(account, "widget_api_key"):
+        return str(account.widget_api_key)
     return ""

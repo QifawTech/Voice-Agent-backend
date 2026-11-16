@@ -51,9 +51,9 @@ async def list_super_admins(db) -> None:
     print(f"{len(admins)} super-admin(s):")
     for a in admins:
         status = "active" if a.is_active else "INACTIVE"
-        # tenant_id should always be NULL for a super-admin — flag it loudly if
+        # account_id should always be NULL for a super-admin — flag it loudly if
         # not, because a bound super-admin is a sign something demoted them.
-        bound = "" if a.tenant_id is None else f"  [WARNING: bound to tenant {a.tenant_id}]"
+        bound = "" if a.account_id is None else f"  [WARNING: bound to account {a.account_id}]"
         print(f"  - {a.email}  ({a.full_name})  {status}{bound}")
 
 
@@ -117,17 +117,17 @@ async def main() -> int:
                 print(f"{email} is already a super_admin. Nothing to do.")
                 return 0
 
-            previous_tenant = existing.tenant_id
+            previous_account = existing.account_id
             existing.role = "super_admin"
-            # A super-admin must have tenant_id = NULL: that is what grants
-            # access to all tenants. Leaving it set would scope them to one
+            # A super-admin must have account_id = NULL: that is what grants
+            # access to all accounts. Leaving it set would scope them to one
             # customer and quietly contradict their role.
-            existing.tenant_id = None
+            existing.account_id = None
             await db.commit()
 
             print(f"Promoted {email} to super_admin.")
-            if previous_tenant is not None:
-                print(f"  Unbound from tenant {previous_tenant} (required for super_admin).")
+            if previous_account is not None:
+                print(f"  Unbound from account {previous_account} (required for super_admin).")
             return 0
 
         # ---- Create a new account ---------------------------------------
@@ -146,7 +146,7 @@ async def main() -> int:
             hashed_password=hash_password(password),
             full_name=args.name,
             role="super_admin",
-            tenant_id=None,  # NULL = access to all tenants
+            account_id=None,  # NULL = access to all accounts
             is_active=True,
         )
         db.add(user)

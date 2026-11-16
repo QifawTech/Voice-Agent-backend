@@ -4,7 +4,7 @@ Voice Agent Platform — Schema Registry
 Re-exports all Pydantic schemas for convenient imports.
 
 Usage:
-    from app.schemas import TenantCreate, TenantResponse, UserLogin, TokenResponse
+    from app.schemas import AccountCreate, AccountResponse, UserLogin, TokenResponse
 """
 
 from app.schemas.analytics import (
@@ -22,11 +22,11 @@ from app.schemas.auth import (
     UserRegister,
     UserResponse,
 )
-from app.schemas.tenant import (
-    TenantCreate,
-    TenantListResponse,
-    TenantResponse,
-    TenantUpdate,
+from app.schemas.account import (
+    AccountCreate,
+    AccountListResponse,
+    AccountResponse,
+    AccountUpdate,
 )
 from app.schemas.voice import (
     SessionResponse,
@@ -39,11 +39,11 @@ from app.schemas.voice import (
 )
 
 __all__ = [
-    # Tenant
-    "TenantCreate",
-    "TenantUpdate",
-    "TenantResponse",
-    "TenantListResponse",
+    # Account
+    "AccountCreate",
+    "AccountUpdate",
+    "AccountResponse",
+    "AccountListResponse",
     # Auth
     "UserRegister",
     "UserLogin",

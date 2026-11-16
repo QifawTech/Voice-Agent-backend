@@ -55,7 +55,7 @@ async def register(
 
     - Checks for duplicate email
     - Hashes the password with bcrypt
-    - Always creates a tenant_admin with no tenant (see UserRegister)
+    - Always creates a tenant_admin with no account (see UserRegister)
     - Returns the created user profile
     """
     # Check for duplicate email
@@ -70,17 +70,17 @@ async def register(
 
     # Create the user.
     #
-    # role and tenant_id are set here, never taken from the request: this
+    # role and account_id are set here, never taken from the request: this
     # endpoint is public, so a client-supplied role was a self-service path to
-    # super_admin, and a client-supplied tenant_id was a path into someone
-    # else's tenant. A signup always produces an unprivileged, unattached
-    # account; tenant_id is back-filled when they create their own tenant, and
+    # super_admin, and a client-supplied account_id was a path into someone
+    # else's account. A signup always produces an unprivileged, unattached
+    # account; account_id is back-filled when they create their own account, and
     # super-admins come from create_super_admin.py instead.
     user = AdminUser(
         email=payload.email,
         hashed_password=hash_password(payload.password),
         full_name=payload.full_name,
-        tenant_id=None,
+        account_id=None,
         role="tenant_admin",
     )
 
@@ -147,7 +147,7 @@ async def login(
             "sub": str(user.id),
             "email": user.email,
             "role": user.role,
-            "tenant_id": str(user.tenant_id) if user.tenant_id else None,
+            "account_id": str(user.account_id) if user.account_id else None,
         }
     )
 

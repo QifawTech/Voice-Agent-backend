@@ -5,7 +5,7 @@ Tracks every order-related action taken through voice conversations.
 Events include: order created, order checked, order cancelled.
 Used for analytics and audit trails.
 
-The restaurant_id identifies which specific restaurant (within a tenant)
+The restaurant_id identifies which specific restaurant (within a account)
 the order belongs to.
 """
 
@@ -31,17 +31,17 @@ class OrderEvent(Base):
         default=uuid.uuid4,
     )
 
-    # ---- Tenant Association ----
-    tenant_id: Mapped[uuid.UUID] = mapped_column(
+    # ---- Account Association ----
+    account_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("tenants.id", ondelete="CASCADE"),
+        ForeignKey("accounts.id", ondelete="CASCADE"),
         nullable=False,
     )
 
     # ---- Restaurant Identification ----
     restaurant_id: Mapped[str | None] = mapped_column(
         String(255), nullable=True
-    )  # e.g., "spice-garden" — identifies restaurant within tenant
+    )  # e.g., "spice-garden" — identifies restaurant within account
 
     # ---- Sub-Tenant Link ----
     # Proper FK for the sub-tenant. restaurant_id above is kept in sync with
@@ -75,11 +75,11 @@ class OrderEvent(Base):
     )
 
     # ---- Relationships ----
-    tenant = relationship("Tenant", back_populates="order_events")
+    account = relationship("Account", back_populates="order_events")
 
     # ---- Indexes ----
     __table_args__ = (
-        Index("ix_order_events_tenant_id", "tenant_id"),
+        Index("ix_order_events_account_id", "account_id"),
         Index("ix_order_events_restaurant_id", "restaurant_id"),
         Index("ix_order_events_sub_tenant_id", "sub_tenant_id"),
         Index("ix_order_events_external_order_id", "external_order_id"),

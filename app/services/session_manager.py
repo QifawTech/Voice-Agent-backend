@@ -19,7 +19,7 @@ class SessionManager:
     def __init__(self, redis: Redis):
         self.redis = redis
 
-    async def create_session(self, tenant_id: str) -> str:
+    async def create_session(self, account_id: str) -> str:
         session_id = str(uuid.uuid4())
         key = f"{SESSION_PREFIX}{session_id}"
         
@@ -27,7 +27,7 @@ class SessionManager:
         
         session_data = {
             "session_id": session_id,
-            "tenant_id": str(tenant_id),
+            "account_id": str(account_id),
             "status": "active",
             "created_at": now,
             "last_active": now,
@@ -38,7 +38,7 @@ class SessionManager:
         await self.redis.hset(key, mapping=session_data)
         await self.redis.expire(key, SESSION_TTL)
         
-        logger.info("session_created", session_id=session_id, tenant_id=tenant_id)
+        logger.info("session_created", session_id=session_id, account_id=account_id)
         return session_id
 
     async def get_session(self, session_id: str) -> dict | None:

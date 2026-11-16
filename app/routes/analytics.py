@@ -8,7 +8,7 @@ API endpoints for dashboard analytics:
     GET /api/v1/analytics/daily             — Daily analytics breakdown
 
 All endpoints require JWT authentication (admin dashboard).
-Tenant admins see only their own data; super admins can see any tenant.
+Account admins see only their own data; super admins can see any account.
 """
 
 from datetime import date, datetime, timedelta, timezone
@@ -45,28 +45,28 @@ router = APIRouter(prefix="/api/v1/analytics", tags=["Analytics"])
 # ──────────────────────────────────────────────────────────────
 
 
-def _resolve_tenant_id(user: AdminUser, tenant_id: UUID | None) -> UUID:
+def _resolve_account_id(user: AdminUser, account_id: UUID | None) -> UUID:
     """
-    Resolve the effective tenant ID based on user role.
+    Resolve the effective account ID based on user role.
 
-    - Super admins: can query any tenant (tenant_id param required).
-    - Tenant admins: always scoped to their own tenant.
+    - Super admins: can query any account (account_id param required).
+    - Account admins: always scoped to their own account.
     """
     if user.role == "super_admin":
-        if tenant_id is None:
+        if account_id is None:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Super admins must specify tenant_id",
+                detail="Super admins must specify account_id",
             )
-        return tenant_id
+        return account_id
 
-    # Tenant admin — use their own tenant_id
-    if user.tenant_id is None:
+    # Account admin — use their own account_id
+    if user.account_id is None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="User is not associated with any tenant",
+            detail="User is not associated with any account",
         )
-    return user.tenant_id
+    return user.account_id
 
 
 # Order item payloads are stored verbatim from each restaurant's own ordering
@@ -123,7 +123,7 @@ def _as_date(value: object) -> date | None:
     description="Get aggregated analytics summary for the dashboard.",
 )
 async def get_overview(
-    tenant_id: UUID | None = Query(default=None, description="Tenant ID (required for super admins)"),
+    account_id: UUID | None = Query(default=None, description="Account ID (required for super admins)"),
     restaurant_id: str | None = Query(default=None, description="Filter by restaurant ID"),
     days: int = Query(default=30, ge=1, le=365, description="Number of days to aggregate"),
     user: AdminUser = Depends(get_current_user),
@@ -139,17 +139,17 @@ async def get_overview(
     - Top ordered items
     - Daily breakdown for charting
     """
-    effective_tenant_id = _resolve_tenant_id(user, tenant_id)
+    effective_account_id = _resolve_account_id(user, account_id)
     period_end = date.today()
     period_start = period_end - timedelta(days=days)
 
     # ── Base filter conditions ────────────────────────────────
     conversation_filters = [
-        ConversationLog.tenant_id == effective_tenant_id,
+        ConversationLog.account_id == effective_account_id,
         ConversationLog.started_at >= datetime.combine(period_start, datetime.min.time(), tzinfo=timezone.utc),
     ]
     order_filters = [
-        OrderEvent.tenant_id == effective_tenant_id,
+        OrderEvent.account_id == effective_account_id,
         OrderEvent.created_at >= datetime.combine(period_start, datetime.min.time(), tzinfo=timezone.utc),
     ]
 
@@ -242,9 +242,9 @@ async def get_overview(
                 # and the id only has to be consistent between requests.
                 id=uuid5(
                     NAMESPACE_URL,
-                    f"daily:{effective_tenant_id}:{restaurant_id or ''}:{cursor.isoformat()}",
+                    f"daily:{effective_account_id}:{restaurant_id or ''}:{cursor.isoformat()}",
                 ),
-                tenant_id=effective_tenant_id,
+                account_id=effective_account_id,
                 restaurant_id=restaurant_id,
                 date=cursor,
                 total_conversations=conversations,
@@ -288,7 +288,7 @@ async def get_overview(
 
     logger.info(
         "analytics_overview_fetched",
-        tenant_id=str(effective_tenant_id),
+        account_id=str(effective_account_id),
         restaurant_id=restaurant_id,
         days=days,
         total_conversations=total_conversations,
@@ -296,7 +296,7 @@ async def get_overview(
     )
 
     return AnalyticsOverview(
-        tenant_id=effective_tenant_id,
+        account_id=effective_account_id,
         restaurant_id=restaurant_id,
         period_start=period_start,
         period_end=period_end,
@@ -322,7 +322,7 @@ async def get_overview(
     description="Get paginated conversation logs with optional filters.",
 )
 async def list_conversations(
-    tenant_id: UUID | None = Query(default=None, description="Tenant ID (required for super admins)"),
+    account_id: UUID | None = Query(default=None, description="Account ID (required for super admins)"),
     restaurant_id: str | None = Query(default=None, description="Filter by restaurant ID"),
     outcome: str | None = Query(default=None, description="Filter by outcome: ordered, browsed, cancelled"),
     page: int = Query(default=1, ge=1, description="Page number"),
@@ -336,10 +336,10 @@ async def list_conversations(
     Supports filtering by restaurant_id and outcome (ordered/browsed/cancelled).
     Results are ordered by started_at descending (most recent first).
     """
-    effective_tenant_id = _resolve_tenant_id(user, tenant_id)
+    effective_account_id = _resolve_account_id(user, account_id)
 
     # Build filter conditions
-    filters = [ConversationLog.tenant_id == effective_tenant_id]
+    filters = [ConversationLog.account_id == effective_account_id]
     if restaurant_id:
         filters.append(ConversationLog.restaurant_id == restaurant_id)
     if outcome:
@@ -366,7 +366,7 @@ async def list_conversations(
 
     logger.info(
         "analytics_conversations_fetched",
-        tenant_id=str(effective_tenant_id),
+        account_id=str(effective_account_id),
         total=total,
         page=page,
         page_size=page_size,
@@ -392,7 +392,7 @@ async def list_conversations(
     description="Get paginated order events with optional filters.",
 )
 async def list_orders(
-    tenant_id: UUID | None = Query(default=None, description="Tenant ID (required for super admins)"),
+    account_id: UUID | None = Query(default=None, description="Account ID (required for super admins)"),
     restaurant_id: str | None = Query(default=None, description="Filter by restaurant ID"),
     event_type: str | None = Query(default=None, description="Filter by event type: created, checked, cancelled"),
     page: int = Query(default=1, ge=1, description="Page number"),
@@ -406,10 +406,10 @@ async def list_orders(
     Supports filtering by restaurant_id and event_type (created/checked/cancelled).
     Results are ordered by created_at descending (most recent first).
     """
-    effective_tenant_id = _resolve_tenant_id(user, tenant_id)
+    effective_account_id = _resolve_account_id(user, account_id)
 
     # Build filter conditions
-    filters = [OrderEvent.tenant_id == effective_tenant_id]
+    filters = [OrderEvent.account_id == effective_account_id]
     if restaurant_id:
         filters.append(OrderEvent.restaurant_id == restaurant_id)
     if event_type:
@@ -436,7 +436,7 @@ async def list_orders(
 
     logger.info(
         "analytics_orders_fetched",
-        tenant_id=str(effective_tenant_id),
+        account_id=str(effective_account_id),
         total=total,
         page=page,
         page_size=page_size,
@@ -462,7 +462,7 @@ async def list_orders(
     description="Get daily analytics breakdown for a date range.",
 )
 async def get_daily_analytics(
-    tenant_id: UUID | None = Query(default=None, description="Tenant ID (required for super admins)"),
+    account_id: UUID | None = Query(default=None, description="Account ID (required for super admins)"),
     restaurant_id: str | None = Query(default=None, description="Filter by restaurant ID"),
     start_date: date | None = Query(default=None, description="Start date (default: 30 days ago)"),
     end_date: date | None = Query(default=None, description="End date (default: today)"),
@@ -476,7 +476,7 @@ async def get_daily_analytics(
     Each row contains: conversations, orders, revenue, conversion rate,
     avg session duration, top items, and peak hours.
     """
-    effective_tenant_id = _resolve_tenant_id(user, tenant_id)
+    effective_account_id = _resolve_account_id(user, account_id)
 
     # Default date range: last 30 days
     if end_date is None:
@@ -499,7 +499,7 @@ async def get_daily_analytics(
 
     # Build filter conditions
     filters = [
-        DailyAnalytics.tenant_id == effective_tenant_id,
+        DailyAnalytics.account_id == effective_account_id,
         DailyAnalytics.date >= start_date,
         DailyAnalytics.date <= end_date,
     ]
@@ -518,7 +518,7 @@ async def get_daily_analytics(
 
     logger.info(
         "analytics_daily_fetched",
-        tenant_id=str(effective_tenant_id),
+        account_id=str(effective_account_id),
         restaurant_id=restaurant_id,
         start_date=str(start_date),
         end_date=str(end_date),

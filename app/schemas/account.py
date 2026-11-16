@@ -1,8 +1,8 @@
 """
-Voice Agent Platform — Tenant Schemas
+Voice Agent Platform — Account Schemas
 
-Pydantic models for tenant API request validation and response serialization.
-A tenant represents a platform/business (e.g., SOPZY, standalone restaurant).
+Pydantic models for account API request validation and response serialization.
+A account represents a platform/business (e.g., SOPZY, standalone restaurant).
 """
 
 from datetime import datetime
@@ -14,8 +14,8 @@ from pydantic import BaseModel, Field
 # ---- Request Schemas ----
 
 
-class TenantCreate(BaseModel):
-    """Request body for creating a new tenant (platform/business)."""
+class AccountCreate(BaseModel):
+    """Request body for creating a new account (platform/business)."""
 
     name: str = Field(..., min_length=1, max_length=255, examples=["SOPZY"])
     slug: str = Field(
@@ -55,8 +55,8 @@ class TenantCreate(BaseModel):
     )
 
 
-class TenantUpdate(BaseModel):
-    """Request body for updating a tenant. All fields optional."""
+class AccountUpdate(BaseModel):
+    """Request body for updating a account. All fields optional."""
 
     name: str | None = Field(default=None, min_length=1, max_length=255)
     slug: str | None = Field(
@@ -81,8 +81,8 @@ class TenantUpdate(BaseModel):
 # ---- Response Schemas ----
 
 
-class TenantResponse(BaseModel):
-    """Response body for a single tenant. Excludes sensitive fields like api_auth_token."""
+class AccountResponse(BaseModel):
+    """Response body for a single account. Excludes sensitive fields like api_auth_token."""
 
     id: UUID
     name: str
@@ -101,10 +101,10 @@ class TenantResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class TenantListResponse(BaseModel):
-    """Paginated list of tenants."""
+class AccountListResponse(BaseModel):
+    """Paginated list of accounts."""
 
-    tenants: list[TenantResponse]
+    accounts: list[AccountResponse]
     total: int
     page: int = 1
     page_size: int = 20
@@ -132,7 +132,7 @@ class SubTenantResponse(BaseModel):
     """Response body for a single sub-tenant."""
 
     id: UUID
-    tenant_id: UUID
+    account_id: UUID
     name: str
     slug: str
     upi_id: str | None = None
@@ -146,7 +146,7 @@ class SubTenantResponse(BaseModel):
 
 
 class SubTenantListResponse(BaseModel):
-    """List of sub-tenants for a tenant."""
+    """List of sub-tenants for a account."""
 
     sub_tenants: list[SubTenantResponse]
     total: int

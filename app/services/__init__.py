@@ -13,7 +13,7 @@ from app.services.security import (
     verify_access_token,
     verify_password,
 )
-from app.services.tenant_service import TenantService
+from app.services.account_service import AccountService
 from app.services.deepseek_client import DeepSeekClient, DeepSeekError
 from app.services.prompt_builder import PromptBuilder
 from app.services.tool_definitions import TOOL_DEFINITIONS, TOOL_MAP, VALID_TOOL_NAMES
@@ -33,8 +33,8 @@ __all__ = [
     "generate_api_key",
     "encrypt_token",
     "decrypt_token",
-    # Tenant Service (Day 5)
-    "TenantService",
+    # Account Service (Day 5)
+    "AccountService",
     # DeepSeek AI (Day 8)
     "DeepSeekClient",
     "DeepSeekError",
@@ -42,7 +42,7 @@ __all__ = [
     "TOOL_DEFINITIONS",
     "TOOL_MAP",
     "VALID_TOOL_NAMES",
-    # Tool Builder — per-tenant, DB-driven tools
+    # Tool Builder — per-account, DB-driven tools
     "ToolRegistry",
     "ToolConflictError",
     "ToolSpec",

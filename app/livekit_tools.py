@@ -2,9 +2,9 @@
 Voice Agent Platform — LiveKit Function Tools
 
 Bridges LiveKit's tool interface with the ActionRouter, so the LiveKit voice
-agent calls the same tenant API endpoints that the REST/WebSocket pipeline uses.
+agent calls the same account API endpoints that the REST/WebSocket pipeline uses.
 
-The toolset is built at runtime from the tenant's ToolSpecs rather than from
+The toolset is built at runtime from the account's ToolSpecs rather than from
 decorated methods. Each spec becomes a RawFunctionTool: LiveKit is handed the
 tool's JSON Schema straight from the database and calls back with the raw
 arguments, which go to the ActionRouter unchanged.
@@ -15,7 +15,7 @@ create_order used to ask the model for its items as a JSON *string* and parse
 it by hand, because a Python signature cannot express an array of objects. A
 raw schema can, so the model now returns a real array.
 
-We use a class based on `llm.Toolset` to cleanly inject the tenant,
+We use a class based on `llm.Toolset` to cleanly inject the account,
 restaurant_id, and room instances into the tools without relying on global state.
 """
 
@@ -72,15 +72,15 @@ _FILLER_DELAY_SECONDS = 0.5
 
 class RestaurantTools(llm.Toolset):
     """
-    Toolset for a tenant's operations, built from its configured tools.
+    Toolset for a account's operations, built from its configured tools.
 
-    Injected with the tenant config, the specs to expose and the LiveKit room
+    Injected with the account config, the specs to expose and the LiveKit room
     upon initialization.
     """
 
     def __init__(
         self,
-        tenant: dict | None,
+        account: dict | None,
         restaurant_id: str | None,
         room: Any,
         language: str = "english",
@@ -89,7 +89,7 @@ class RestaurantTools(llm.Toolset):
         sub_tenant_id: str | None = None,
         context: dict[str, str] | None = None,
     ):
-        self.tenant = tenant
+        self.account = account
         self.restaurant_id = restaurant_id
         self.room = room
         self.language = language
@@ -110,7 +110,7 @@ class RestaurantTools(llm.Toolset):
         self.cancelled = False
         self.order_value: float | None = None
 
-        # A tenant with no configured tools falls back to the built-in
+        # A account with no configured tools falls back to the built-in
         # restaurant set, matching ToolRegistry.load_specs().
         self._specs: dict[str, ToolSpec] = {
             spec.name: spec for spec in (specs if specs is not None else PRESET_SPECS)
@@ -195,9 +195,9 @@ class RestaurantTools(llm.Toolset):
 
         # No session id means this run can't be tied to a conversation row
         # (shouldn't happen from the agent, but keeps a direct caller safe).
-        if function_name in ORDER_EVENT_TYPES and self.session_id and self.tenant:
+        if function_name in ORDER_EVENT_TYPES and self.session_id and self.account:
             await log_order_event(
-                tenant_id=self.tenant.get("id"),
+                account_id=self.account.get("id"),
                 session_id=self.session_id,
                 restaurant_id=self.restaurant_id,
                 sub_tenant_id=self.sub_tenant_id,
@@ -235,9 +235,9 @@ class RestaurantTools(llm.Toolset):
 
         await broadcast_debug("tool_call", {"function": function_name, "args": arguments})
 
-        if not self.tenant:
-            logger.warning("livekit_tool_no_tenant", extra={"function": function_name})
-            await broadcast_debug("tool_result", {"function": function_name, "error": "No tenant"})
+        if not self.account:
+            logger.warning("livekit_tool_no_account", extra={"function": function_name})
+            await broadcast_debug("tool_result", {"function": function_name, "error": "No account"})
             return "I'm sorry, I couldn't process that — the restaurant connection isn't set up yet."
 
         router = ActionRouter()
@@ -269,7 +269,7 @@ class RestaurantTools(llm.Toolset):
                 result = await router.execute(
                     function_name=function_name,
                     arguments=arguments,
-                    tenant=self.tenant,
+                    account=self.account,
                     restaurant_id=self.restaurant_id,
                     tools=self._specs,
                     context=self.context,

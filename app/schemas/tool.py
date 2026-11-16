@@ -9,7 +9,7 @@ Everything checkable at save time is checked at save time:
 
     * the name is a legal function identifier the model can emit
     * `parameters` is a JSON Schema object, with `required` naming real properties
-    * the path is relative, so a tool cannot point away from the tenant's API
+    * the path is relative, so a tool cannot point away from the account's API
     * every {placeholder} refers to a declared parameter (or restaurant_id)
 
 That last one is the rule that earns its keep. A typo like {order_Id} used to
@@ -105,7 +105,7 @@ def _validate_path(value: str) -> str:
         raise ValueError("Path is required, e.g. '/voice-agent/orders'.")
     if "://" in value or value.startswith("//"):
         raise ValueError(
-            "Path must be relative to the tenant's API base URL — drop the "
+            "Path must be relative to the account's API base URL — drop the "
             "scheme and host (use '/voice-agent/orders', not a full URL)."
         )
     if ".." in value:
@@ -190,7 +190,7 @@ def _check_placeholders(
 
 
 class ToolCreate(BaseModel):
-    """Request body for adding a tool to a tenant."""
+    """Request body for adding a tool to a account."""
 
     name: str = Field(..., max_length=64, examples=["book_table"])
     display_name: str | None = Field(default=None, max_length=120, examples=["Book a Table"])
@@ -331,7 +331,7 @@ class ToolUpdate(BaseModel):
 
 
 class ToolTestRequest(BaseModel):
-    """Run one tool against the tenant's real API, with arguments we supply."""
+    """Run one tool against the account's real API, with arguments we supply."""
 
     arguments: dict = Field(
         default_factory=dict,
@@ -359,7 +359,7 @@ class ToolResponse(BaseModel):
     """One configured tool."""
 
     id: UUID
-    tenant_id: UUID
+    account_id: UUID
     name: str
     display_name: str | None = None
     description: str
@@ -380,7 +380,7 @@ class ToolResponse(BaseModel):
 
 
 class ToolListResponse(BaseModel):
-    """A tenant's tools, plus what the agent would actually be offered."""
+    """A account's tools, plus what the agent would actually be offered."""
 
     tools: list[ToolResponse]
     total: int
@@ -388,7 +388,7 @@ class ToolListResponse(BaseModel):
     using_preset_fallback: bool = Field(
         default=False,
         description=(
-            "True when this tenant has no tools of its own and the agent is "
+            "True when this account has no tools of its own and the agent is "
             "running on the built-in restaurant set."
         ),
     )

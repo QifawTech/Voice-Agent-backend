@@ -61,10 +61,10 @@ class Settings(BaseSettings):
     SARVAM_TTS_SPEAKER: str = "shreya"
 
     # ---- ElevenLabs (multilingual TTS — a selectable provider) ----
-    # Switchable per tenant from the dashboard (voice_config.tts_provider =
+    # Switchable per account from the dashboard (voice_config.tts_provider =
     # "elevenlabs"). One voice id works across every language because the
     # ElevenLabs models are multilingual, so there is no per-language speaker
-    # map the way Sarvam needs. Defaults below are only used when the tenant
+    # map the way Sarvam needs. Defaults below are only used when the account
     # picked ElevenLabs but set no explicit voice/model.
     ELEVENLABS_API_KEY: str = "placeholder"
     ELEVENLABS_MODEL: str = "eleven_multilingual_v2"

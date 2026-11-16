@@ -4,12 +4,12 @@ Voice Agent Platform — Sub-Tenant Routes
 Sub-tenants belong to a multi-tenant account. They are SYNCED from the
 customer's own API, never created by hand here — see docs/integration-guide.md.
 
-    POST /api/v1/tenants/{id}/sub-tenants/sync           — Pull the list from their API
-    POST /api/v1/tenants/{id}/sub-tenants/test-endpoint  — Dry run; writes nothing
-    GET  /api/v1/tenants/{id}/sub-tenants                — List
-    GET  /api/v1/tenants/{id}/sub-tenants/{sub_id}       — Get one
-    PUT  /api/v1/tenants/{id}/sub-tenants/{sub_id}       — Edit display overrides only
-    GET  /api/v1/tenants/{id}/sub-tenants/{sub_id}/embed-code
+    POST /api/v1/accounts/{id}/sub-tenants/sync           — Pull the list from their API
+    POST /api/v1/accounts/{id}/sub-tenants/test-endpoint  — Dry run; writes nothing
+    GET  /api/v1/accounts/{id}/sub-tenants                — List
+    GET  /api/v1/accounts/{id}/sub-tenants/{sub_id}       — Get one
+    PUT  /api/v1/accounts/{id}/sub-tenants/{sub_id}       — Edit display overrides only
+    GET  /api/v1/accounts/{id}/sub-tenants/{sub_id}/embed-code
 
 There is deliberately no POST-to-create and no DELETE: the customer's API owns
 that list. A sub-tenant disappears by being dropped from their API, which
@@ -29,9 +29,9 @@ from app.database import get_db
 from app.logger import get_logger
 from app.middleware.auth import get_current_user
 from app.models.admin_user import AdminUser
-from app.models.tenant import Tenant
+from app.models.account import Account
 from app.redis_client import get_redis
-from app.schemas.tenant import (
+from app.schemas.account import (
     SubTenantListResponse,
     SubTenantResponse,
     SubTenantSyncResponse,
@@ -39,11 +39,11 @@ from app.schemas.tenant import (
     SyncDiagnostic,
 )
 from app.services.sub_tenant_service import SubTenantService, SyncError
-from app.services.tenant_service import TenantService
+from app.services.account_service import AccountService
 
 logger = get_logger(__name__)
 
-router = APIRouter(prefix="/api/v1/tenants", tags=["Sub-Tenants"])
+router = APIRouter(prefix="/api/v1/accounts", tags=["Sub-Tenants"])
 
 
 def _get_sub_service(
@@ -53,32 +53,32 @@ def _get_sub_service(
     return SubTenantService(db=db, redis=redis)
 
 
-def _get_tenant_service(
+def _get_account_service(
     db: AsyncSession = Depends(get_db),
     redis: Redis = Depends(get_redis),
-) -> TenantService:
-    return TenantService(db=db, redis=redis)
+) -> AccountService:
+    return AccountService(db=db, redis=redis)
 
 
-async def _require_multi_tenant(
-    tenant_id: UUID,
+async def _require_multi_account(
+    account_id: UUID,
     current_user: AdminUser,
-    tenant_service: TenantService,
-) -> Tenant:
+    account_service: AccountService,
+) -> Account:
     """
-    Load the tenant, enforcing both access scope and tenancy mode.
+    Load the account, enforcing both access scope and tenancy mode.
 
     A single-tenant account has no sub-tenants at all, so every route in this
     module is a 409 for it rather than an empty list — an empty list would
     suggest "none yet", which is a different and misleading thing.
     """
-    tenant = await tenant_service.get_tenant(tenant_id, current_user)
-    if tenant is None:
+    account = await account_service.get_account(account_id, current_user)
+    if account is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Tenant not found",
+            detail="Account not found",
         )
-    if tenant.tenancy_type != "multi":
+    if account.tenancy_type != "multi":
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
@@ -86,7 +86,7 @@ async def _require_multi_tenant(
                 "sub-tenants. Switch it to multi-tenant first."
             ),
         )
-    return tenant
+    return account
 
 
 # ----------------------------------------------------------------
@@ -94,7 +94,7 @@ async def _require_multi_tenant(
 # ----------------------------------------------------------------
 
 @router.post(
-    "/{tenant_id}/sub-tenants/sync",
+    "/{account_id}/sub-tenants/sync",
     response_model=SubTenantSyncResponse,
     summary="Sync Sub-Tenants",
     description=(
@@ -104,21 +104,21 @@ async def _require_multi_tenant(
     ),
 )
 async def sync_sub_tenants(
-    tenant_id: UUID,
+    account_id: UUID,
     current_user: AdminUser = Depends(get_current_user),
-    tenant_service: TenantService = Depends(_get_tenant_service),
+    account_service: AccountService = Depends(_get_account_service),
     service: SubTenantService = Depends(_get_sub_service),
 ):
-    tenant = await _require_multi_tenant(tenant_id, current_user, tenant_service)
+    account = await _require_multi_account(account_id, current_user, account_service)
 
     try:
-        result = await service.sync_from_api(tenant)
+        result = await service.sync_from_api(account)
     except SyncError as e:
         # A failed sync is not a server fault — it is their endpoint needing
         # work, so return 200 with the diagnostic the UI renders inline.
         logger.warning(
             "sub_tenant_sync_failed",
-            tenant_id=str(tenant_id),
+            account_id=str(account_id),
             reason=e.reason,
             status_code=e.status_code,
         )
@@ -127,7 +127,7 @@ async def sync_sub_tenants(
             diagnostic=SyncDiagnostic(**e.as_dict()),
         )
 
-    rows = await service.list_sub_tenants(tenant_id)
+    rows = await service.list_sub_tenants(account_id)
     return SubTenantSyncResponse(
         success=True,
         **result,
@@ -140,7 +140,7 @@ async def sync_sub_tenants(
 # ----------------------------------------------------------------
 
 @router.post(
-    "/{tenant_id}/sub-tenants/test-endpoint",
+    "/{account_id}/sub-tenants/test-endpoint",
     response_model=SubTenantSyncResponse,
     summary="Test Listing Endpoint",
     description=(
@@ -149,15 +149,15 @@ async def sync_sub_tenants(
     ),
 )
 async def test_listing_endpoint(
-    tenant_id: UUID,
+    account_id: UUID,
     current_user: AdminUser = Depends(get_current_user),
-    tenant_service: TenantService = Depends(_get_tenant_service),
+    account_service: AccountService = Depends(_get_account_service),
     service: SubTenantService = Depends(_get_sub_service),
 ):
-    tenant = await _require_multi_tenant(tenant_id, current_user, tenant_service)
+    account = await _require_multi_account(account_id, current_user, account_service)
 
     try:
-        entries = await service.fetch_list(tenant)
+        entries = await service.fetch_list(account)
     except SyncError as e:
         return SubTenantSyncResponse(
             success=False,
@@ -184,19 +184,19 @@ async def test_listing_endpoint(
 # ----------------------------------------------------------------
 
 @router.get(
-    "/{tenant_id}/sub-tenants",
+    "/{account_id}/sub-tenants",
     response_model=SubTenantListResponse,
     summary="List Sub-Tenants",
 )
 async def list_sub_tenants(
-    tenant_id: UUID,
+    account_id: UUID,
     include_inactive: bool = True,
     current_user: AdminUser = Depends(get_current_user),
-    tenant_service: TenantService = Depends(_get_tenant_service),
+    account_service: AccountService = Depends(_get_account_service),
     service: SubTenantService = Depends(_get_sub_service),
 ):
-    await _require_multi_tenant(tenant_id, current_user, tenant_service)
-    rows = await service.list_sub_tenants(tenant_id, include_inactive=include_inactive)
+    await _require_multi_account(account_id, current_user, account_service)
+    rows = await service.list_sub_tenants(account_id, include_inactive=include_inactive)
     return SubTenantListResponse(
         sub_tenants=[SubTenantResponse.model_validate(r) for r in rows],
         total=len(rows),
@@ -204,19 +204,19 @@ async def list_sub_tenants(
 
 
 @router.get(
-    "/{tenant_id}/sub-tenants/{sub_tenant_id}",
+    "/{account_id}/sub-tenants/{sub_tenant_id}",
     response_model=SubTenantResponse,
     summary="Get Sub-Tenant",
 )
 async def get_sub_tenant(
-    tenant_id: UUID,
+    account_id: UUID,
     sub_tenant_id: UUID,
     current_user: AdminUser = Depends(get_current_user),
-    tenant_service: TenantService = Depends(_get_tenant_service),
+    account_service: AccountService = Depends(_get_account_service),
     service: SubTenantService = Depends(_get_sub_service),
 ):
-    await _require_multi_tenant(tenant_id, current_user, tenant_service)
-    row = await service.get_sub_tenant(tenant_id, sub_tenant_id)
+    await _require_multi_account(account_id, current_user, account_service)
+    row = await service.get_sub_tenant(account_id, sub_tenant_id)
     if row is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -230,7 +230,7 @@ async def get_sub_tenant(
 # ----------------------------------------------------------------
 
 @router.put(
-    "/{tenant_id}/sub-tenants/{sub_tenant_id}",
+    "/{account_id}/sub-tenants/{sub_tenant_id}",
     response_model=SubTenantResponse,
     summary="Update Sub-Tenant Overrides",
     description=(
@@ -240,15 +240,15 @@ async def get_sub_tenant(
     ),
 )
 async def update_sub_tenant(
-    tenant_id: UUID,
+    account_id: UUID,
     sub_tenant_id: UUID,
     payload: SubTenantUpdate,
     current_user: AdminUser = Depends(get_current_user),
-    tenant_service: TenantService = Depends(_get_tenant_service),
+    account_service: AccountService = Depends(_get_account_service),
     service: SubTenantService = Depends(_get_sub_service),
 ):
-    await _require_multi_tenant(tenant_id, current_user, tenant_service)
-    row = await service.update_overrides(tenant_id, sub_tenant_id, payload)
+    await _require_multi_account(account_id, current_user, account_service)
+    row = await service.update_overrides(account_id, sub_tenant_id, payload)
     if row is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -262,7 +262,7 @@ async def update_sub_tenant(
 # ----------------------------------------------------------------
 
 @router.get(
-    "/{tenant_id}/sub-tenants/{sub_tenant_id}/embed-code",
+    "/{account_id}/sub-tenants/{sub_tenant_id}/embed-code",
     summary="Get Sub-Tenant Embed Code",
     description=(
         "Widget snippet for one sub-tenant. All sub-tenants share the account's "
@@ -270,24 +270,24 @@ async def update_sub_tenant(
     ),
 )
 async def get_sub_tenant_embed_code(
-    tenant_id: UUID,
+    account_id: UUID,
     sub_tenant_id: UUID,
     current_user: AdminUser = Depends(get_current_user),
-    tenant_service: TenantService = Depends(_get_tenant_service),
+    account_service: AccountService = Depends(_get_account_service),
     service: SubTenantService = Depends(_get_sub_service),
 ):
-    tenant = await _require_multi_tenant(tenant_id, current_user, tenant_service)
-    row = await service.get_sub_tenant(tenant_id, sub_tenant_id)
+    account = await _require_multi_account(account_id, current_user, account_service)
+    row = await service.get_sub_tenant(account_id, sub_tenant_id)
     if row is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Sub-tenant not found",
         )
 
-    if not tenant.widget_api_key:
+    if not account.widget_api_key:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Tenant has no widget API key. Create one first.",
+            detail="Account has no widget API key. Create one first.",
         )
 
     settings = get_settings()
@@ -298,4 +298,4 @@ async def get_sub_tenant_embed_code(
         if settings.is_development
         else "https://widget.voiceagent.io"
     )
-    return tenant_service.generate_embed_code(tenant, widget_host, sub_tenant=row)
+    return account_service.generate_embed_code(account, widget_host, sub_tenant=row)

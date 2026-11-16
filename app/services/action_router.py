@@ -1,19 +1,19 @@
 """
 Voice Agent Platform — Action Router
 
-Routes a model's function calls to real HTTP requests against the tenant's API.
+Routes a model's function calls to real HTTP requests against the account's API.
 Acts as the bridge between AI decisions and real-world actions.
 
 The Action Router:
     1. Receives a tool call (function_name + arguments)
-    2. Looks up that tool's spec among the ones the tenant has enabled
+    2. Looks up that tool's spec among the ones the account has enabled
     3. Builds the request from the spec's templates and the call's arguments
-    4. Makes the HTTP request with tenant auth
+    4. Makes the HTTP request with account auth
     5. Returns the result back to the conversation engine
 
 There is no per-tool handler any more. Which tools exist, where they point and
-what they send all come from the tenant's rows in tenant_tools, resolved into
-ToolSpecs by ToolRegistry and passed in by the caller. A tenant can add a tool
+what they send all come from the account's rows in tenant_tools, resolved into
+ToolSpecs by ToolRegistry and passed in by the caller. A account can add a tool
 from the dashboard and this file does not change.
 
 Callers that have no registry to hand — the standalone scripts, and anything
@@ -27,9 +27,9 @@ Usage:
     result = await router.execute(
         function_name="check_menu",
         arguments={"category": "starters"},
-        tenant=tenant,
+        account=account,
         restaurant_id="rest_001",
-        tools=await registry.load_spec_map(tenant.id),
+        tools=await registry.load_spec_map(account.id),
     )
 """
 
@@ -123,10 +123,10 @@ class ActionRouterError(Exception):
 
 class ActionRouter:
     """
-    Routes tool calls to the tenant's API endpoints.
+    Routes tool calls to the account's API endpoints.
 
     Every call follows the same path:
-    1. Resolve the tool name against the tenant's enabled specs
+    1. Resolve the tool name against the account's enabled specs
     2. Build URL, query, body and headers from the spec's templates
     3. Add auth headers (decrypted Bearer token)
     4. Make the async HTTP request
@@ -145,13 +145,13 @@ class ActionRouter:
         self,
         function_name: str,
         arguments: str | dict,
-        tenant: Any,
+        account: Any,
         restaurant_id: str | None = None,
         tools: dict[str, ToolSpec] | Sequence[ToolSpec] | None = None,
         context: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """
-        Execute a tool call against the tenant's API.
+        Execute a tool call against the account's API.
 
         This is the main entry point — called by the Conversation Engine and by
         the LiveKit toolset whenever the model returns a tool call.
@@ -159,13 +159,13 @@ class ActionRouter:
         Args:
             function_name: The tool name the model emitted (e.g., "check_menu").
             arguments: Function arguments as a JSON string or dict.
-            tenant: The Tenant model/dict with api_base_url and api_auth_token.
+            account: The Account model/dict with api_base_url and api_auth_token.
             restaurant_id: Sub-tenant slug, for multi-restaurant platforms.
-            tools: The tenant's enabled specs. Defaults to the built-in presets.
+            tools: The account's enabled specs. Defaults to the built-in presets.
             context: Per-call values supplied by the client (the phone) at call
                 start. Each key is exposed to tool templates as {context_<key>}.
                 Carried through untouched — the platform never validates these;
-                the tenant's own API must treat them as untrusted input.
+                the account's own API must treat them as untrusted input.
 
         Returns:
             Result dict with at minimum {"success": bool, ...}.
@@ -205,17 +205,17 @@ class ActionRouter:
 
         arguments = dict(arguments or {})
 
-        # Validate tenant API config
-        api_base_url = self._get_api_base_url(tenant)
+        # Validate account API config
+        api_base_url = self._get_api_base_url(account)
         if not api_base_url:
             logger.warning(
                 "action_router_no_api_url",
                 function_name=function_name,
-                tenant_id=self._get_tenant_id(tenant),
+                account_id=self._get_account_id(account),
             )
             return {
                 "success": False,
-                "error": "Restaurant API is not configured for this tenant.",
+                "error": "Restaurant API is not configured for this account.",
             }
 
         # Every tool gets restaurant_id for free, whether or not it declares it
@@ -226,7 +226,7 @@ class ActionRouter:
         # Per-call context from the client, namespaced so a tool template reads
         # it as {context_<key>} (e.g. {context_lat}). Unlike restaurant_id these
         # are NOT validated by the platform — they are carried through as-is, and
-        # the tenant's own API is responsible for treating them as untrusted.
+        # the account's own API is responsible for treating them as untrusted.
         if context:
             for ctx_key, ctx_val in context.items():
                 arguments[f"context_{ctx_key}"] = ctx_val
@@ -234,7 +234,7 @@ class ActionRouter:
         logger.info(
             "action_router_executing",
             function_name=function_name,
-            tenant_id=self._get_tenant_id(tenant),
+            account_id=self._get_account_id(account),
             restaurant_id=restaurant_id,
             argument_keys=list(arguments.keys()) if arguments else [],
         )
@@ -244,7 +244,7 @@ class ActionRouter:
                 spec=spec,
                 api_base_url=api_base_url,
                 args=arguments,
-                base_headers=self._build_headers(tenant),
+                base_headers=self._build_headers(account),
             )
         except ToolTemplateError as e:
             # The tool is configured in a way this call cannot satisfy — a
@@ -254,7 +254,7 @@ class ActionRouter:
             logger.error(
                 "action_router_template_error",
                 function_name=function_name,
-                tenant_id=self._get_tenant_id(tenant),
+                account_id=self._get_account_id(account),
                 error=str(e),
             )
             return {
@@ -273,7 +273,7 @@ class ActionRouter:
         logger.info(
             "action_router_result",
             function_name=function_name,
-            tenant_id=self._get_tenant_id(tenant),
+            account_id=self._get_account_id(account),
             success=result.get("success", False),
         )
 
@@ -518,7 +518,7 @@ class ActionRouter:
     # Helpers
     # ──────────────────────────────────────────────────────────────
 
-    def _build_headers(self, tenant: Any) -> dict[str, str]:
+    def _build_headers(self, account: Any) -> dict[str, str]:
         """
         Build HTTP headers for the restaurant API request.
 
@@ -535,8 +535,8 @@ class ActionRouter:
             "X-Voice-Agent": VOICE_AGENT_HEADER,
         }
 
-        # Get encrypted auth token from tenant
-        auth_token = self._get_tenant_attr(tenant, "api_auth_token")
+        # Get encrypted auth token from account
+        auth_token = self._get_tenant_attr(account, "api_auth_token")
         if auth_token:
             try:
                 decrypted = decrypt_token(auth_token)
@@ -547,7 +547,7 @@ class ActionRouter:
                 # ENCRYPTION_KEY. Previously both vanished into one line.
                 logger.warning(
                     "action_router_token_decrypt_failed",
-                    tenant_id=self._get_tenant_id(tenant),
+                    account_id=self._get_account_id(account),
                     reason=(
                         "token_not_encrypted"
                         if not looks_encrypted(auth_token)
@@ -560,26 +560,26 @@ class ActionRouter:
 
         return headers
 
-    def _get_api_base_url(self, tenant: Any) -> str | None:
-        """Extract api_base_url from tenant (model or dict), stripping trailing slash."""
-        url = self._get_tenant_attr(tenant, "api_base_url")
+    def _get_api_base_url(self, account: Any) -> str | None:
+        """Extract api_base_url from account (model or dict), stripping trailing slash."""
+        url = self._get_tenant_attr(account, "api_base_url")
         return url.rstrip("/") if url else None
 
-    def _get_tenant_id(self, tenant: Any) -> str:
-        """Extract tenant ID as string from tenant model or dict."""
-        return str(self._get_tenant_attr(tenant, "id") or "unknown")
+    def _get_account_id(self, account: Any) -> str:
+        """Extract account ID as string from account model or dict."""
+        return str(self._get_tenant_attr(account, "id") or "unknown")
 
     @staticmethod
-    def _get_tenant_attr(tenant: Any, attr: str) -> Any:
+    def _get_tenant_attr(account: Any, attr: str) -> Any:
         """
-        Get an attribute from a tenant, supporting both model objects and dicts.
+        Get an attribute from a account, supporting both model objects and dicts.
 
-        This makes the router work with both SQLAlchemy Tenant models
+        This makes the router work with both SQLAlchemy Account models
         and plain dicts (e.g., from Redis cache).
         """
-        if isinstance(tenant, dict):
-            return tenant.get(attr)
-        return getattr(tenant, attr, None)
+        if isinstance(account, dict):
+            return account.get(attr)
+        return getattr(account, attr, None)
 
 
 def _as_spec_map(

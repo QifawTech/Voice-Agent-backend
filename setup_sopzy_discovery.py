@@ -5,7 +5,7 @@ The outside-the-store voice agent: a customer opens the Sopzy app, names a
 dish, and hears which nearby shops sell it. It is a SEPARATE account from the
 in-store Sopzy account so that:
 
-  * it is single-tenant, so a call needs no restaurant slug (no 401), and
+  * it is single-account, so a call needs no restaurant slug (no 401), and
   * its agent is offered ONLY the discovery tool, never the ordering tools.
 
 Both accounts call the same Sopzy API; they differ only in which endpoints
@@ -33,12 +33,12 @@ from sqlalchemy import select
 
 from app.database import async_session_factory
 from app.models.admin_user import AdminUser
-from app.models.tenant import Tenant
+from app.models.account import Account
 from app.redis_client import init_redis
-from app.schemas.tenant import TenantCreate
+from app.schemas.account import AccountCreate
 from app.schemas.tool import ToolCreate
 from app.services.security import decrypt_token, encrypt_token
-from app.services.tenant_service import TenantService
+from app.services.account_service import AccountService
 from app.services.tool_presets import GREETING_TOOL_NAME
 from app.services.tool_registry import ToolRegistry
 
@@ -193,7 +193,7 @@ GREETING_TOOL_UPDATE = {
 KEEP_TOOLS = {GREETING_TOOL_NAME, FIND_DISH_TOOL["name"]}
 
 
-def build_voice_config(source: Tenant) -> dict:
+def build_voice_config(source: Account) -> dict:
     src = source.voice_config or {}
     config = {k: src[k] for k in VOICE_KEYS if src.get(k) not in (None, "")}
     config["greeting"] = FALLBACK_GREETING
@@ -215,7 +215,7 @@ async def main(source_slug: str, key_file: str) -> int:
 
     async with async_session_factory() as db:
         source = (
-            await db.execute(select(Tenant).where(Tenant.slug == source_slug))
+            await db.execute(select(Account).where(Account.slug == source_slug))
         ).scalar_one_or_none()
         if source is None:
             print(f"ERROR: no account with slug '{source_slug}'.")
@@ -226,12 +226,12 @@ async def main(source_slug: str, key_file: str) -> int:
         api_token = decrypt_token(source.api_auth_token)
         voice_config = build_voice_config(source)
 
-        tenants = TenantService(db=db, redis=redis)
-        tenant = (
-            await db.execute(select(Tenant).where(Tenant.slug == DISCOVERY_SLUG))
+        accounts = AccountService(db=db, redis=redis)
+        account = (
+            await db.execute(select(Account).where(Account.slug == DISCOVERY_SLUG))
         ).scalar_one_or_none()
 
-        if tenant is None:
+        if account is None:
             admin = (
                 await db.execute(
                     select(AdminUser).where(AdminUser.role == "super_admin").limit(1)
@@ -240,8 +240,8 @@ async def main(source_slug: str, key_file: str) -> int:
             if admin is None:
                 print("ERROR: no super_admin user exists to create the account.")
                 return 1
-            tenant = await tenants.create_tenant(
-                TenantCreate(
+            account = await accounts.create_account(
+                AccountCreate(
                     name=DISCOVERY_NAME,
                     slug=DISCOVERY_SLUG,
                     platform="sopzy",
@@ -255,50 +255,50 @@ async def main(source_slug: str, key_file: str) -> int:
             await db.commit()
             action = "created"
         else:
-            tenant.name = DISCOVERY_NAME
-            tenant.platform = "sopzy"
-            tenant.tenancy_type = "single"
-            tenant.api_base_url = source.api_base_url
-            tenant.api_auth_token = encrypt_token(api_token)
-            tenant.voice_config = voice_config
-            tenant.is_active = True
+            account.name = DISCOVERY_NAME
+            account.platform = "sopzy"
+            account.tenancy_type = "single"
+            account.api_base_url = source.api_base_url
+            account.api_auth_token = encrypt_token(api_token)
+            account.voice_config = voice_config
+            account.is_active = True
             await db.commit()
-            await tenants._invalidate_cache(tenant.id)
+            await accounts._invalidate_cache(account.id)
             action = "updated"
 
-        await db.refresh(tenant)
+        await db.refresh(account)
 
         # Tools: exactly the discovery set. The ordering presets a new account
         # is seeded with would only confuse a call that has no restaurant.
         registry = ToolRegistry(db=db, redis=redis)
         removed = []
-        for tool in await registry.list_tools(tenant.id):
+        for tool in await registry.list_tools(account.id):
             if tool.name not in KEEP_TOOLS:
-                await registry.delete_tool(tenant.id, tool.id)
+                await registry.delete_tool(account.id, tool.id)
                 removed.append(tool.name)
 
-        greeting = await registry.get_tool_by_name(tenant.id, GREETING_TOOL_NAME)
+        greeting = await registry.get_tool_by_name(account.id, GREETING_TOOL_NAME)
         if greeting is None:
-            await registry.seed_presets(tenant.id, [GREETING_TOOL_NAME])
-            greeting = await registry.get_tool_by_name(tenant.id, GREETING_TOOL_NAME)
-        await registry.update_tool(tenant.id, greeting.id, GREETING_TOOL_UPDATE)
+            await registry.seed_presets(account.id, [GREETING_TOOL_NAME])
+            greeting = await registry.get_tool_by_name(account.id, GREETING_TOOL_NAME)
+        await registry.update_tool(account.id, greeting.id, GREETING_TOOL_UPDATE)
 
         # Validate exactly as the dashboard would before saving.
         ToolCreate(**FIND_DISH_TOOL)
-        find_dish = await registry.get_tool_by_name(tenant.id, FIND_DISH_TOOL["name"])
+        find_dish = await registry.get_tool_by_name(account.id, FIND_DISH_TOOL["name"])
         if find_dish is None:
-            await registry.create_tool(tenant.id, FIND_DISH_TOOL)
+            await registry.create_tool(account.id, FIND_DISH_TOOL)
         else:
-            await registry.update_tool(tenant.id, find_dish.id, FIND_DISH_TOOL)
+            await registry.update_tool(account.id, find_dish.id, FIND_DISH_TOOL)
 
         with open(key_file, "w", encoding="utf-8") as f:
-            f.write(tenant.widget_api_key)
+            f.write(account.widget_api_key)
 
-        final_tools = sorted(t.name for t in await registry.list_tools(tenant.id))
-        print(f"account {action}: {tenant.name} ({tenant.slug})")
-        print(f"  tenant_id     : {tenant.id}")
-        print(f"  tenancy_type  : {tenant.tenancy_type}")
-        print(f"  api_base_url  : {tenant.api_base_url}  (copied from '{source_slug}')")
+        final_tools = sorted(t.name for t in await registry.list_tools(account.id))
+        print(f"account {action}: {account.name} ({account.slug})")
+        print(f"  account_id     : {account.id}")
+        print(f"  tenancy_type  : {account.tenancy_type}")
+        print(f"  api_base_url  : {account.api_base_url}  (copied from '{source_slug}')")
         print(f"  language      : {voice_config.get('language')}")
         print(f"  greeting_setup: {voice_config['greeting_setup']}")
         print(f"  tools         : {final_tools}")

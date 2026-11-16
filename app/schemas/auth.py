@@ -24,21 +24,21 @@ class UserRegister(BaseModel):
         ..., min_length=1, max_length=255, examples=["Rahul Sharma"]
     )
 
-    # `role` and `tenant_id` are deliberately NOT accepted here.
+    # `role` and `account_id` are deliberately NOT accepted here.
     #
     # This endpoint is public and unauthenticated, so anything it reads from the
     # body is attacker-controlled. Accepting `role` let anyone self-assign
-    # super_admin (access to every tenant); accepting `tenant_id` let anyone
-    # bind themselves to a tenant UUID they had guessed or learned, taking over
+    # super_admin (access to every account); accepting `account_id` let anyone
+    # bind themselves to a account UUID they had guessed or learned, taking over
     # that customer's account. Both are now fixed server-side in
-    # `app/routes/auth.py`: every signup is a tenant_admin with no tenant.
+    # `app/routes/auth.py`: every signup is a tenant_admin with no account.
     #
     # Extra fields in the body are ignored by pydantic, so a request still
     # carrying `"role": "super_admin"` succeeds — and produces a tenant_admin.
     #
     # Super-admins are created out of band by `create_super_admin.py`.
-    # A tenant_id is back-filled when the user creates their own tenant
-    # (see TenantService.create_tenant).
+    # A account_id is back-filled when the user creates their own account
+    # (see AccountService.create_account).
 
 
 class UserLogin(BaseModel):
@@ -56,11 +56,11 @@ class UserUpdate(BaseModel):
         default=None, min_length=1, max_length=255, examples=["Rahul Sharma"]
     )
 
-    # `role`, `tenant_id` and `is_active` are deliberately NOT accepted, for the
+    # `role`, `account_id` and `is_active` are deliberately NOT accepted, for the
     # same reason UserRegister refuses them: this endpoint is authenticated but
     # the body is still client-supplied, so accepting `role` would let any admin
-    # promote themselves to super_admin, `tenant_id` would let them re-point
-    # their account at another customer's tenant, and `is_active` would let a
+    # promote themselves to super_admin, `account_id` would let them re-point
+    # their account at another customer's account, and `is_active` would let a
     # deactivated account revive itself. Those three are administrative
     # decisions, not profile fields.
 
@@ -88,7 +88,7 @@ class UserResponse(BaseModel):
     id: UUID
     email: str
     full_name: str
-    tenant_id: UUID | None = None
+    account_id: UUID | None = None
     role: str
     is_active: bool
     last_login_at: datetime | None = None

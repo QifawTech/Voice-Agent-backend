@@ -84,7 +84,7 @@ async def _require_agent(
     """
     Load an agent, enforcing that the caller may see it.
 
-    A super admin (tenant_id is NULL) may reach any account's agents; everyone
+    A super admin (account_id is NULL) may reach any account's agents; everyone
     else is confined to their own. Returning 404 rather than 403 for someone
     else's agent is deliberate: a 403 confirms the id exists.
     """
@@ -94,7 +94,7 @@ async def _require_agent(
     if agent is None:
         raise HTTPException(status_code=404, detail="Agent not found")
 
-    if current_user.role != "super_admin" and agent.account_id != current_user.tenant_id:
+    if current_user.role != "super_admin" and agent.account_id != current_user.account_id:
         raise HTTPException(status_code=404, detail="Agent not found")
 
     return agent
@@ -113,7 +113,7 @@ async def _require_occurrence(
         raise HTTPException(status_code=404, detail="Reminder occurrence not found")
 
     agent = occurrence.reminder.agent
-    if current_user.role != "super_admin" and agent.account_id != current_user.tenant_id:
+    if current_user.role != "super_admin" and agent.account_id != current_user.account_id:
         raise HTTPException(status_code=404, detail="Reminder occurrence not found")
 
     return occurrence
@@ -144,7 +144,7 @@ async def create_agent(
     current_user: AdminUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    if current_user.tenant_id is None:
+    if current_user.account_id is None:
         raise HTTPException(
             status_code=409,
             detail=(
@@ -154,7 +154,7 @@ async def create_agent(
         )
 
     agent = Agent(
-        account_id=current_user.tenant_id,
+        account_id=current_user.account_id,
         type=payload.type,
         name=payload.name,
         slug=payload.slug or _slugify(payload.name),
@@ -195,7 +195,7 @@ async def list_agents(
 ):
     query = select(Agent).order_by(Agent.created_at)
     if current_user.role != "super_admin":
-        query = query.where(Agent.account_id == current_user.tenant_id)
+        query = query.where(Agent.account_id == current_user.account_id)
     result = await db.execute(query)
     return list(result.scalars().all())
 

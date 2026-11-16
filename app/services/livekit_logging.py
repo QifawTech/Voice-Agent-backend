@@ -35,7 +35,7 @@ logger = logging.getLogger("livekit-logging")
 
 
 # The preset tool names that correspond to an order lifecycle event, mapped to
-# the order_events.event_type they produce. Tools a tenant has renamed in the
+# the order_events.event_type they produce. Tools a account has renamed in the
 # dashboard won't match and simply aren't logged as order events — the canonical
 # names are what the restaurant API contract (and the mock API) use.
 ORDER_EVENT_TYPES: dict[str, str] = {
@@ -74,7 +74,7 @@ def _new_session():
 
 async def log_order_event(
     *,
-    tenant_id: object,
+    account_id: object,
     session_id: str,
     restaurant_id: str | None,
     sub_tenant_id: object,
@@ -96,9 +96,9 @@ async def log_order_event(
     if event_type is None:
         return
 
-    tid = _to_uuid(tenant_id)
+    tid = _to_uuid(account_id)
     if tid is None:
-        logger.warning("order_event_skipped_no_tenant", extra={"function": function_name})
+        logger.warning("order_event_skipped_no_account", extra={"function": function_name})
         return
 
     # The mock/real API returns the order id as "order_id"; fall back through a
@@ -117,7 +117,7 @@ async def log_order_event(
         async with factory() as db:
             db.add(
                 OrderEvent(
-                    tenant_id=tid,
+                    account_id=tid,
                     restaurant_id=restaurant_id,
                     sub_tenant_id=_to_uuid(sub_tenant_id),
                     session_id=session_id,
@@ -139,7 +139,7 @@ async def log_order_event(
 
 async def log_conversation(
     *,
-    tenant_id: object,
+    account_id: object,
     session_id: str,
     restaurant_id: str | None,
     sub_tenant_id: object,
@@ -156,9 +156,9 @@ async def log_conversation(
     is one row, not one row per turn (the per-turn duplication the WebSocket
     path has). `outcome` is ordered | cancelled | browsed.
     """
-    tid = _to_uuid(tenant_id)
+    tid = _to_uuid(account_id)
     if tid is None:
-        logger.warning("conversation_skipped_no_tenant", extra={"session_id": session_id})
+        logger.warning("conversation_skipped_no_account", extra={"session_id": session_id})
         return
 
     now = datetime.now(timezone.utc)
@@ -169,7 +169,7 @@ async def log_conversation(
         async with factory() as db:
             db.add(
                 ConversationLog(
-                    tenant_id=tid,
+                    account_id=tid,
                     restaurant_id=restaurant_id,
                     sub_tenant_id=_to_uuid(sub_tenant_id),
                     session_id=session_id,

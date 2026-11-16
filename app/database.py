@@ -9,7 +9,7 @@ Usage:
 
     @router.get("/example")
     async def example(db: AsyncSession = Depends(get_db)):
-        result = await db.execute(select(Tenant))
+        result = await db.execute(select(Account))
         ...
 """
 

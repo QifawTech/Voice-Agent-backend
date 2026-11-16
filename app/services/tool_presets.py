@@ -4,11 +4,11 @@ Voice Agent Platform — Restaurant Tool Presets
 The seven restaurant tools, as data. These used to be two hand-written halves
 that had to be kept in step: a JSON schema in tool_definitions.py and a Python
 handler in action_router.py. They are now one record each, seeded into
-tenant_tools when a tenant is created, and editable from the dashboard
+tenant_tools when a account is created, and editable from the dashboard
 afterwards.
 
 Each preset is the exact behaviour the hardcoded handlers had, so seeding a
-tenant changes nothing about what its agent does:
+account changes nothing about what its agent does:
 
     check_menu        GET    /voice-agent/menu?category=&restaurantId=
     get_item_details  GET    /voice-agent/menu[/{item_id}]?search=&restaurantId=
@@ -31,7 +31,7 @@ Two details worth knowing before editing:
     model to produce something unparseable.
 
 PRESETS is the catalogue the dashboard offers. DEFAULT_PRESET_NAMES is what a
-new tenant gets seeded with — currently all of them, kept separate so a preset
+new account gets seeded with — currently all of them, kept separate so a preset
 can be offered without being installed by default.
 """
 
@@ -48,8 +48,8 @@ PRESETS: list[dict[str, Any]] = [
     # ──────────────────────────────────────────────────────────
     # Fetched ONCE at call connect by the platform (not by the LLM) to build the
     # opening line — see INTERNAL_TOOL_NAMES below and build_initial_greeting in
-    # livekit_agent.py. Seeded like any other tool so each tenant can repoint its
-    # path/query at their own API, or edit it, from the dashboard. A tenant whose
+    # livekit_agent.py. Seeded like any other tool so each account can repoint its
+    # path/query at their own API, or edit it, from the dashboard. A account whose
     # API has no such endpoint simply gets the plain welcome (the fetch fails
     # soft), so the greeting data is opt-in by virtue of the endpoint existing.
     {
@@ -338,11 +338,11 @@ INTERNAL_TOOL_NAMES: frozenset[str] = frozenset({GREETING_TOOL_NAME})
 
 PRESET_MAP: dict[str, dict[str, Any]] = {p["name"]: p for p in PRESETS}
 
-# What a newly created tenant is seeded with.
+# What a newly created account is seeded with.
 DEFAULT_PRESET_NAMES: tuple[str, ...] = tuple(p["name"] for p in PRESETS)
 
-# Specs for the presets, used as the fallback when a tenant has no tool rows at
-# all — a tenant created before this table existed, or one whose seeding failed,
+# Specs for the presets, used as the fallback when a account has no tool rows at
+# all — a account created before this table existed, or one whose seeding failed,
 # should still be able to take orders.
 PRESET_SPECS: list[ToolSpec] = [ToolSpec.from_dict(p) for p in PRESETS]
 
@@ -354,7 +354,7 @@ def preset_rows(names: tuple[str, ...] | list[str] | None = None) -> list[dict[s
     Preset records ready to insert as tenant_tools rows.
 
     Returns copies: the caller is about to attach these to a session, and the
-    module-level dicts must not pick up a tenant_id.
+    module-level dicts must not pick up a account_id.
     """
     chosen = DEFAULT_PRESET_NAMES if names is None else names
     rows: list[dict[str, Any]] = []

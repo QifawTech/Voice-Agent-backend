@@ -124,12 +124,12 @@ def create_app() -> FastAPI:
     # not by where it came from. An Origin header is self-reported and proves
     # nothing; the API key is the real check, and it still applies.
     #
-    # Everything else -- tenants, tools, analytics, auth -- keeps the strict
+    # Everything else -- accounts, tools, analytics, auth -- keeps the strict
     # allowlist above, so the dashboard's surface is unchanged.
     #
-    # Next step when it is wanted: an allowed-origins list per tenant, set by
+    # Next step when it is wanted: an allowed-origins list per account, set by
     # the customer in the dashboard and checked here, the way an API key can be
-    # restricted to one site. That belongs to the tenant, not to this file.
+    # restricted to one site. That belongs to the account, not to this file.
     WIDGET_PATHS = ("/api/v1/livekit/token", "/api/v1/voice", "/widget.js", "/livekit-client.js")
 
     @app.middleware("http")
@@ -265,7 +265,7 @@ def create_app() -> FastAPI:
         )
 
     # ---- Widget Script ----
-    # The embed snippet generated for every tenant points here. Without this
+    # The embed snippet generated for every account points here. Without this
     # route that snippet 404s, so no customer could ever load the widget.
     # The file lives beside the backend, in the Voice-Widget folder.
     @app.get("/widget.js", include_in_schema=False)
@@ -304,7 +304,7 @@ def create_app() -> FastAPI:
 
     # ---- Register Route Modules ----
     from app.routes.auth import router as auth_router
-    from app.routes.tenant import router as tenant_router
+    from app.routes.account import router as tenant_router
     from app.routes.sub_tenant import router as sub_tenant_router
     from app.routes.tenant_tool import router as tenant_tool_router
     from app.routes.voice import router as voice_router

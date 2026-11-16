@@ -7,8 +7,8 @@ LiveKit worker job and gets cached in Redis, where a live ORM object would
 raise DetachedInstanceError or fail to serialise.
 
 This module owns the template language that turns a tool call's arguments into
-an HTTP request, and the checks that keep a tenant-authored template from
-pointing anywhere but the tenant's own API.
+an HTTP request, and the checks that keep a account-authored template from
+pointing anywhere but the account's own API.
 
 ──────────────────────────────────────────────────────────────────────────────
 TEMPLATE LANGUAGE
@@ -48,8 +48,8 @@ These templates come from the dashboard, and the values poured into them come
 from an LLM reading what a caller said out loud. Neither is trusted to name a
 destination. A path template must be relative, and every placeholder value is
 percent-encoded with no safe characters — so an `order_id` of "../../internal"
-becomes one encoded segment instead of climbing out of the tenant's API root.
-The request can only ever land under the tenant's own api_base_url.
+becomes one encoded segment instead of climbing out of the account's API root.
+The request can only ever land under the account's own api_base_url.
 """
 
 from __future__ import annotations
@@ -81,7 +81,7 @@ BODY_METHODS = ("POST", "PUT", "PATCH", "DELETE")
 IMPLICIT_ARGUMENTS = ("restaurant_id",)
 
 # Header names a tool may not set: these are ours to control, and letting a
-# template overwrite the Authorization header would leak or break tenant auth.
+# template overwrite the Authorization header would leak or break account auth.
 RESERVED_HEADERS = ("authorization", "host", "content-length", "x-voice-agent")
 
 
@@ -277,7 +277,7 @@ def _substitute_path(template: str, args: dict[str, Any]) -> str:
                 f"make it optional."
             )
         # safe="" encodes slashes and dots too, so a value can never add a path
-        # segment or climb above the tenant's API root.
+        # segment or climb above the account's API root.
         return quote(_as_text(value), safe="")
 
     return PLACEHOLDER_RE.sub(_one, template)
@@ -314,14 +314,14 @@ def build_request(
 
     Raises:
         ToolTemplateError: if a required path placeholder is missing, or the
-            resolved URL would leave the tenant's API root.
+            resolved URL would leave the account's API root.
     """
     path = resolve_path(spec.path_template, args)
 
     if "://" in path or path.startswith("//"):
         raise ToolTemplateError(
             f"Tool '{spec.name}' resolved to an absolute URL ({path!r}). "
-            "Tool paths must stay relative to the tenant's API base URL."
+            "Tool paths must stay relative to the account's API base URL."
         )
 
     url = api_base_url.rstrip("/") + path

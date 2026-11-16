@@ -4,7 +4,7 @@ Voice Agent Platform — Analytics Schemas
 Pydantic models for analytics API responses: conversation logs,
 order events, daily stats, and dashboard overview.
 
-All models include restaurant_id to support multi-restaurant tenants.
+All models include restaurant_id to support multi-restaurant accounts.
 """
 
 from datetime import date, datetime
@@ -20,7 +20,7 @@ class ConversationLogResponse(BaseModel):
     """Response body for a single conversation log entry."""
 
     id: UUID
-    tenant_id: UUID
+    account_id: UUID
     restaurant_id: str | None = None
     session_id: str
     messages: list | None = None
@@ -50,7 +50,7 @@ class OrderEventResponse(BaseModel):
     """Response body for a single order event."""
 
     id: UUID
-    tenant_id: UUID
+    account_id: UUID
     restaurant_id: str | None = None
     session_id: str
     external_order_id: str
@@ -78,7 +78,7 @@ class DailyAnalyticsResponse(BaseModel):
     """Response body for a single day's analytics."""
 
     id: UUID
-    tenant_id: UUID
+    account_id: UUID
     restaurant_id: str | None = None
     date: date
     total_conversations: int = 0
@@ -103,9 +103,9 @@ class DailyAnalyticsListResponse(BaseModel):
 
 
 class AnalyticsOverview(BaseModel):
-    """Summary dashboard data for a tenant (optionally filtered by restaurant)."""
+    """Summary dashboard data for a account (optionally filtered by restaurant)."""
 
-    tenant_id: UUID
+    account_id: UUID
     restaurant_id: str | None = None
     period_start: date
     period_end: date

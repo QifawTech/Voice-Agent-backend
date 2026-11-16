@@ -40,7 +40,7 @@ That creates a daily 21:00 reminder, which is the real test. Two evenings have
 to pass, because that is what "twice in a row" means — the plan is blunt that
 days have to pass for days to be tested.
 
-Everything is created under a throwaway tenant called "Milestone 1 check", so
+Everything is created under a throwaway account called "Milestone 1 check", so
 `cleanup` removes all of it and nothing else.
 """
 
@@ -66,7 +66,7 @@ from app.models.delivery import Delivery  # noqa: E402
 from app.models.occurrence import Occurrence  # noqa: E402
 from app.models.person import Person  # noqa: E402
 from app.models.reminder import Reminder  # noqa: E402
-from app.models.tenant import Tenant  # noqa: E402
+from app.models.account import Account  # noqa: E402
 from app.services import occurrence_generator  # noqa: E402
 from app.services.reminder_engine import ReminderEngine  # noqa: E402
 from app.services.timekeeping import to_local, utcnow  # noqa: E402
@@ -129,12 +129,12 @@ async def cmd_setup(args) -> int:
         shape = f"every {args.every} minutes, starting in about a minute"
 
     async with async_session_factory() as session:
-        tenant = Tenant(name=TENANT_NAME, slug=TENANT_SLUG, platform="standalone")
-        session.add(tenant)
+        account = Account(name=TENANT_NAME, slug=TENANT_SLUG, platform="standalone")
+        session.add(account)
         await session.flush()
 
         agent = Agent(
-            account_id=tenant.id,
+            account_id=account.id,
             type="nudge",
             name="Milestone 1 reminders",
             slug="milestone-1",
@@ -230,15 +230,15 @@ async def cmd_status(args) -> int:
     print("=" * 72)
 
     async with async_session_factory() as session:
-        tenant = (
-            await session.execute(select(Tenant).where(Tenant.slug == TENANT_SLUG))
+        account = (
+            await session.execute(select(Account).where(Account.slug == TENANT_SLUG))
         ).scalar_one_or_none()
-        if tenant is None:
+        if account is None:
             print("\n  Nothing set up. Run `setup` first.\n")
             return 1
 
         agent = (
-            await session.execute(select(Agent).where(Agent.account_id == tenant.id))
+            await session.execute(select(Agent).where(Agent.account_id == account.id))
         ).scalar_one_or_none()
         reminder = (
             await session.execute(select(Reminder).where(Reminder.agent_id == agent.id))
@@ -412,14 +412,14 @@ async def _print_deliveries(reminder_id) -> None:
 async def cmd_cleanup(args, *, quiet: bool = False) -> int:
     async with async_session_factory() as session:
         result = await session.execute(
-            delete(Tenant).where(Tenant.slug == TENANT_SLUG)
+            delete(Account).where(Account.slug == TENANT_SLUG)
         )
         await session.commit()
 
     if not quiet:
         count = result.rowcount or 0
         if count:
-            print("\n  Removed the 'Milestone 1 check' tenant and everything under it.\n")
+            print("\n  Removed the 'Milestone 1 check' account and everything under it.\n")
         else:
             print("\n  Nothing to remove.\n")
     return 0

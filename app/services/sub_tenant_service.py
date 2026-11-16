@@ -17,7 +17,7 @@ The contract their API must implement is in docs/integration-guide.md:
 
 Usage:
     service = SubTenantService(db, redis)
-    result = await service.sync_from_api(tenant)
+    result = await service.sync_from_api(account)
 """
 
 from datetime import datetime, timezone
@@ -30,13 +30,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.logger import get_logger
 from app.models.sub_tenant import SubTenant
-from app.models.tenant import Tenant
-from app.schemas.tenant import SubTenantUpdate
+from app.models.account import Account
+from app.schemas.account import SubTenantUpdate
 from app.services.security import decrypt_token, looks_encrypted
 
 logger = get_logger(__name__)
 
-# The path we append to the tenant's api_base_url.
+# The path we append to the account's api_base_url.
 LIST_ENDPOINT_PATH = "/voice-agent/restaurants"
 
 # How long we wait before giving up on their API.
@@ -92,8 +92,8 @@ class SubTenantService:
     # FETCH — talk to the customer's API
     # ----------------------------------------------------------------
 
-    def _build_list_url(self, tenant: Tenant) -> str:
-        if not tenant.api_base_url:
+    def _build_list_url(self, account: Account) -> str:
+        if not account.api_base_url:
             raise SyncError(
                 reason="not_configured",
                 message=(
@@ -101,50 +101,50 @@ class SubTenantService:
                     "before syncing sub-tenants."
                 ),
             )
-        return f"{tenant.api_base_url.rstrip('/')}{LIST_ENDPOINT_PATH}"
+        return f"{account.api_base_url.rstrip('/')}{LIST_ENDPOINT_PATH}"
 
-    def _build_headers(self, tenant: Tenant, url: str) -> dict:
+    def _build_headers(self, account: Account, url: str) -> dict:
         headers = {"Content-Type": "application/json"}
 
-        if not tenant.api_auth_token:
+        if not account.api_auth_token:
             return headers
 
         # A token that was never encrypted and a token we cannot decrypt are
         # different problems with different fixes, so they get different errors.
-        if not looks_encrypted(tenant.api_auth_token):
+        if not looks_encrypted(account.api_auth_token):
             raise SyncError(
                 reason="not_configured",
                 message=(
                     "The stored API token is not encrypted, so it cannot be used. "
-                    "Re-save this tenant's API token to store it correctly."
+                    "Re-save this account's API token to store it correctly."
                 ),
                 url_called=url,
             )
 
         try:
-            headers["Authorization"] = f"Bearer {decrypt_token(tenant.api_auth_token)}"
+            headers["Authorization"] = f"Bearer {decrypt_token(account.api_auth_token)}"
         except ValueError:
             raise SyncError(
                 reason="not_configured",
                 message=(
                     "Could not decrypt the stored API token. This usually means "
                     "ENCRYPTION_KEY changed since the token was saved. Re-save the "
-                    "tenant's API token, or restore the previous ENCRYPTION_KEY."
+                    "account's API token, or restore the previous ENCRYPTION_KEY."
                 ),
                 url_called=url,
             )
 
         return headers
 
-    async def fetch_list(self, tenant: Tenant) -> list[dict]:
+    async def fetch_list(self, account: Account) -> list[dict]:
         """
         Call the customer's listing endpoint and return validated [{id, name}].
 
         Raises SyncError with a developer-actionable diagnostic on any failure.
         Writes nothing — this is also what the "Test my endpoint" button runs.
         """
-        url = self._build_list_url(tenant)
-        headers = self._build_headers(tenant, url)
+        url = self._build_list_url(account)
+        headers = self._build_headers(account, url)
 
         try:
             async with httpx.AsyncClient(timeout=SYNC_TIMEOUT_SECONDS) as client:
@@ -281,7 +281,7 @@ class SubTenantService:
     # SYNC — reconcile their list with our rows
     # ----------------------------------------------------------------
 
-    async def sync_from_api(self, tenant: Tenant) -> dict:
+    async def sync_from_api(self, account: Account) -> dict:
         """
         Fetch their list and reconcile it with our sub_tenants rows.
 
@@ -295,7 +295,7 @@ class SubTenantService:
         Returns {created, updated, deactivated, total_active}.
         Raises SyncError if their endpoint could not be read.
         """
-        if tenant.tenancy_type != "multi":
+        if account.tenancy_type != "multi":
             raise SyncError(
                 reason="not_configured",
                 message=(
@@ -304,12 +304,12 @@ class SubTenantService:
                 ),
             )
 
-        entries = await self.fetch_list(tenant)
+        entries = await self.fetch_list(account)
         incoming = {e["slug"]: e["name"] for e in entries}
 
         existing_rows = (
             await self.db.execute(
-                select(SubTenant).where(SubTenant.tenant_id == tenant.id)
+                select(SubTenant).where(SubTenant.account_id == account.id)
             )
         ).scalars().all()
         existing = {row.slug: row for row in existing_rows}
@@ -322,7 +322,7 @@ class SubTenantService:
             if row is None:
                 self.db.add(
                     SubTenant(
-                        tenant_id=tenant.id,
+                        account_id=account.id,
                         name=name,
                         slug=slug,
                         is_active=True,
@@ -346,11 +346,11 @@ class SubTenantService:
                 deactivated += 1
 
         await self.db.flush()
-        await self._invalidate_cache(tenant.id)
+        await self._invalidate_cache(account.id)
 
         logger.info(
             "sub_tenants_synced",
-            tenant_id=str(tenant.id),
+            account_id=str(account.id),
             created=created,
             updated=updated,
             deactivated=deactivated,
@@ -369,30 +369,30 @@ class SubTenantService:
     # ----------------------------------------------------------------
 
     async def list_sub_tenants(
-        self, tenant_id: UUID, include_inactive: bool = True
+        self, account_id: UUID, include_inactive: bool = True
     ) -> list[SubTenant]:
-        query = select(SubTenant).where(SubTenant.tenant_id == tenant_id)
+        query = select(SubTenant).where(SubTenant.account_id == account_id)
         if not include_inactive:
             query = query.where(SubTenant.is_active.is_(True))
         result = await self.db.execute(query.order_by(SubTenant.name))
         return list(result.scalars().all())
 
     async def get_sub_tenant(
-        self, tenant_id: UUID, sub_tenant_id: UUID
+        self, account_id: UUID, sub_tenant_id: UUID
     ) -> SubTenant | None:
         result = await self.db.execute(
             select(SubTenant).where(
                 SubTenant.id == sub_tenant_id,
-                SubTenant.tenant_id == tenant_id,
+                SubTenant.account_id == account_id,
             )
         )
         return result.scalar_one_or_none()
 
-    async def get_by_slug(self, tenant_id: UUID, slug: str) -> SubTenant | None:
+    async def get_by_slug(self, account_id: UUID, slug: str) -> SubTenant | None:
         """Used by the request resolver to validate an incoming sub-tenant."""
         result = await self.db.execute(
             select(SubTenant).where(
-                SubTenant.tenant_id == tenant_id,
+                SubTenant.account_id == account_id,
                 SubTenant.slug == slug,
             )
         )
@@ -404,7 +404,7 @@ class SubTenantService:
 
     async def update_overrides(
         self,
-        tenant_id: UUID,
+        account_id: UUID,
         sub_tenant_id: UUID,
         payload: SubTenantUpdate,
     ) -> SubTenant | None:
@@ -414,7 +414,7 @@ class SubTenantService:
         name and slug are deliberately absent from SubTenantUpdate — they are
         owned by the customer's API and would be overwritten on the next sync.
         """
-        row = await self.get_sub_tenant(tenant_id, sub_tenant_id)
+        row = await self.get_sub_tenant(account_id, sub_tenant_id)
         if row is None:
             return None
 
@@ -423,11 +423,11 @@ class SubTenantService:
 
         await self.db.flush()
         await self.db.refresh(row)
-        await self._invalidate_cache(tenant_id)
+        await self._invalidate_cache(account_id)
 
         logger.info(
             "sub_tenant_updated",
-            tenant_id=str(tenant_id),
+            account_id=str(account_id),
             sub_tenant_id=str(sub_tenant_id),
             fields=list(payload.model_dump(exclude_unset=True).keys()),
         )
@@ -437,10 +437,10 @@ class SubTenantService:
     # CACHE
     # ----------------------------------------------------------------
 
-    async def _invalidate_cache(self, tenant_id: UUID) -> None:
+    async def _invalidate_cache(self, account_id: UUID) -> None:
         if self.redis is None:
             return
         try:
-            await self.redis.delete(f"sub_tenants:{tenant_id}")
+            await self.redis.delete(f"sub_tenants:{account_id}")
         except Exception as e:
             logger.warning("sub_tenant_cache_invalidate_error", error=str(e))

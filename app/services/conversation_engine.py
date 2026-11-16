@@ -28,7 +28,7 @@ Usage:
 
     engine = ConversationEngine(db=db_session, redis=redis_client)
     response = await engine.process_message(
-        tenant=tenant,
+        account=account,
         message="What's on the menu?",
         session_id=None,           # auto-creates new session
         restaurant_id="spice-garden",
@@ -103,7 +103,7 @@ class ConversationEngine:
 
     async def process_message(
         self,
-        tenant: Any,
+        account: Any,
         message: str,
         session_id: str | None = None,
         restaurant_id: str | None = None,
@@ -114,7 +114,7 @@ class ConversationEngine:
         This is the main entry point — called by the voice API route.
 
         Args:
-            tenant: Tenant model or dict with config (name, api_base_url, etc.).
+            account: Account model or dict with config (name, api_base_url, etc.).
             message: The user's text message.
             session_id: Existing session ID (None = create new session).
             restaurant_id: Restaurant ID for multi-restaurant platforms.
@@ -130,12 +130,12 @@ class ConversationEngine:
             ConversationEngineError: On critical failures.
         """
         start_time = time.time()
-        tenant_id = self._get_tenant_field(tenant, "id")
+        account_id = self._get_tenant_field(account, "id")
         actions: list[dict[str, Any]] = []
 
         logger.info(
             "conversation_engine_processing",
-            tenant_id=str(tenant_id),
+            account_id=str(account_id),
             session_id=session_id,
             restaurant_id=restaurant_id,
             message_length=len(message),
@@ -144,26 +144,26 @@ class ConversationEngine:
         # ── Step 1: Session Management ──────────────────────────
         session_id, session, is_new = await self._resolve_session(
             session_id=session_id,
-            tenant_id=str(tenant_id),
+            account_id=str(account_id),
         )
 
         # ── Step 2: Build Messages for DeepSeek ─────────────────
         history = session.get("history", [])
         messages = self.prompt_builder.build_messages(
-            tenant=tenant,
+            account=account,
             user_message=message,
             conversation_history=history,
         )
 
         # ── Step 3: AI Processing Loop (with tool calling) ──────
-        # Resolve the tenant's enabled tools once per turn rather than per
+        # Resolve the account's enabled tools once per turn rather than per
         # round: a tool toggled mid-conversation takes effect on the next
         # message, and the model sees a stable tool list within one turn.
-        tool_specs = await self.tool_registry.load_specs(tenant_id)
+        tool_specs = await self.tool_registry.load_specs(account_id)
 
         ai_response_text, round_actions, total_usage = await self._ai_loop(
             messages=messages,
-            tenant=tenant,
+            account=account,
             restaurant_id=restaurant_id,
             tool_specs=tool_specs,
         )
@@ -183,7 +183,7 @@ class ConversationEngine:
 
         # ── Step 5: Log to PostgreSQL ───────────────────────────
         await self._log_conversation(
-            tenant_id=tenant_id,
+            account_id=account_id,
             session_id=session_id,
             restaurant_id=restaurant_id,
             message=message,
@@ -195,7 +195,7 @@ class ConversationEngine:
 
         # Log order events if any
         await self._log_order_events(
-            tenant_id=tenant_id,
+            account_id=account_id,
             session_id=session_id,
             restaurant_id=restaurant_id,
             actions=actions,
@@ -205,7 +205,7 @@ class ConversationEngine:
 
         logger.info(
             "conversation_engine_complete",
-            tenant_id=str(tenant_id),
+            account_id=str(account_id),
             session_id=session_id,
             is_new_session=is_new,
             message_count=message_count,
@@ -229,7 +229,7 @@ class ConversationEngine:
     async def _ai_loop(
         self,
         messages: list[dict],
-        tenant: Any,
+        account: Any,
         restaurant_id: str | None,
         tool_specs: list[ToolSpec],
     ) -> tuple[str, list[dict], dict]:
@@ -311,7 +311,7 @@ class ConversationEngine:
                 tool_result, tool_action = await self._execute_tool_call(
                     function_name=tc["function_name"],
                     arguments=tc["arguments"],
-                    tenant=tenant,
+                    account=account,
                     restaurant_id=restaurant_id,
                     tool_specs=spec_map,
                 )
@@ -352,7 +352,7 @@ class ConversationEngine:
         self,
         function_name: str,
         arguments: str | dict,
-        tenant: Any,
+        account: Any,
         restaurant_id: str | None,
         tool_specs: dict[str, ToolSpec],
     ) -> tuple[dict, dict | None]:
@@ -369,7 +369,7 @@ class ConversationEngine:
             result = await self.action_router.execute(
                 function_name=function_name,
                 arguments=arguments,
-                tenant=tenant,
+                account=account,
                 restaurant_id=restaurant_id,
                 tools=tool_specs,
             )
@@ -465,7 +465,7 @@ class ConversationEngine:
     async def _resolve_session(
         self,
         session_id: str | None,
-        tenant_id: str,
+        account_id: str,
     ) -> tuple[str, dict, bool]:
         """
         Resolve or create a session.
@@ -485,15 +485,15 @@ class ConversationEngine:
                 logger.info(
                     "session_expired_creating_new",
                     old_session_id=session_id,
-                    tenant_id=tenant_id,
+                    account_id=account_id,
                 )
 
         # Create new session
-        session_id = await self.session_manager.create_session(tenant_id)
+        session_id = await self.session_manager.create_session(account_id)
         session = await self.session_manager.get_session(session_id)
         is_new = True
 
-        logger.info("session_created_for_engine", session_id=session_id, tenant_id=tenant_id)
+        logger.info("session_created_for_engine", session_id=session_id, account_id=account_id)
         return session_id, session or {}, is_new
 
     async def _update_session_cart(
@@ -527,7 +527,7 @@ class ConversationEngine:
 
     async def _log_conversation(
         self,
-        tenant_id: Any,
+        account_id: Any,
         session_id: str,
         restaurant_id: str | None,
         message: str,
@@ -553,7 +553,7 @@ class ConversationEngine:
                     break
 
             log_entry = ConversationLog(
-                tenant_id=tenant_id,
+                account_id=account_id,
                 restaurant_id=restaurant_id,
                 session_id=session_id,
                 messages=history,
@@ -584,7 +584,7 @@ class ConversationEngine:
 
     async def _log_order_events(
         self,
-        tenant_id: Any,
+        account_id: Any,
         session_id: str,
         restaurant_id: str | None,
         actions: list[dict],
@@ -610,7 +610,7 @@ class ConversationEngine:
                 order_id = data.get("order_id", "unknown")
 
                 event = OrderEvent(
-                    tenant_id=tenant_id,
+                    account_id=account_id,
                     restaurant_id=restaurant_id,
                     session_id=session_id,
                     external_order_id=order_id,
@@ -659,8 +659,8 @@ class ConversationEngine:
     # ──────────────────────────────────────────────────────────────
 
     @staticmethod
-    def _get_tenant_field(tenant: Any, field: str, default=None) -> Any:
-        """Get a field from tenant (model or dict)."""
-        if isinstance(tenant, dict):
-            return tenant.get(field, default)
-        return getattr(tenant, field, default)
+    def _get_tenant_field(account: Any, field: str, default=None) -> Any:
+        """Get a field from account (model or dict)."""
+        if isinstance(account, dict):
+            return account.get(field, default)
+        return getattr(account, field, default)

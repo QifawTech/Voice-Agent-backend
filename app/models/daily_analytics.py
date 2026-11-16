@@ -1,12 +1,12 @@
 """
 Voice Agent Platform — DailyAnalytics Model
 
-Pre-computed daily metrics per tenant per restaurant for fast dashboard queries.
+Pre-computed daily metrics per account per restaurant for fast dashboard queries.
 Aggregated from ConversationLog and OrderEvent data.
 Each row = one restaurant's stats for one day.
 
-For multi-restaurant tenants (like SOPZY), there's one row per restaurant per day.
-For standalone tenants, restaurant_id may be null.
+For multi-restaurant accounts (like SOPZY), there's one row per restaurant per day.
+For standalone accounts, restaurant_id may be null.
 """
 
 import uuid
@@ -20,7 +20,7 @@ from app.database import Base
 
 
 class DailyAnalytics(Base):
-    """Pre-computed daily analytics per tenant per restaurant."""
+    """Pre-computed daily analytics per account per restaurant."""
 
     __tablename__ = "daily_analytics"
 
@@ -31,17 +31,17 @@ class DailyAnalytics(Base):
         default=uuid.uuid4,
     )
 
-    # ---- Tenant Association ----
-    tenant_id: Mapped[uuid.UUID] = mapped_column(
+    # ---- Account Association ----
+    account_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("tenants.id", ondelete="CASCADE"),
+        ForeignKey("accounts.id", ondelete="CASCADE"),
         nullable=False,
     )
 
     # ---- Restaurant Identification ----
     restaurant_id: Mapped[str | None] = mapped_column(
         String(255), nullable=True
-    )  # e.g., "spice-garden" — identifies restaurant within tenant
+    )  # e.g., "spice-garden" — identifies restaurant within account
 
     # ---- Sub-Tenant Link ----
     # Proper FK for the sub-tenant. restaurant_id above is kept in sync with
@@ -82,19 +82,19 @@ class DailyAnalytics(Base):
     )
 
     # ---- Relationships ----
-    tenant = relationship("Tenant", back_populates="daily_analytics")
+    account = relationship("Account", back_populates="daily_analytics")
 
     # ---- Indexes & Constraints ----
     __table_args__ = (
         UniqueConstraint(
-            "tenant_id", "restaurant_id", "date",
-            name="uq_daily_analytics_tenant_restaurant_date",
+            "account_id", "restaurant_id", "date",
+            name="uq_daily_analytics_account_restaurant_date",
         ),
-        Index("ix_daily_analytics_tenant_id", "tenant_id"),
+        Index("ix_daily_analytics_account_id", "account_id"),
         Index("ix_daily_analytics_restaurant_id", "restaurant_id"),
         Index("ix_daily_analytics_sub_tenant_id", "sub_tenant_id"),
         Index("ix_daily_analytics_date", "date"),
     )
 
     def __repr__(self) -> str:
-        return f"<DailyAnalytics(id={self.id}, tenant={self.tenant_id}, restaurant='{self.restaurant_id}', date={self.date})>"
+        return f"<DailyAnalytics(id={self.id}, account={self.account_id}, restaurant='{self.restaurant_id}', date={self.date})>"

@@ -1,19 +1,19 @@
 """
 Voice Agent Platform — Tool Routes
 
-CRUD for the function tools a tenant's voice agent can call, plus the two
+CRUD for the function tools a account's voice agent can call, plus the two
 things that make the tool builder usable rather than just possible: a catalogue
 of built-in presets to start from, and a test runner.
 
-    GET    /api/v1/tenants/{id}/tools                  — List
-    POST   /api/v1/tenants/{id}/tools                  — Add
-    GET    /api/v1/tenants/{id}/tools/presets          — Built-in catalogue
-    POST   /api/v1/tenants/{id}/tools/install-presets  — Install presets
-    GET    /api/v1/tenants/{id}/tools/{tool_id}        — Get one
-    PUT    /api/v1/tenants/{id}/tools/{tool_id}        — Edit
-    DELETE /api/v1/tenants/{id}/tools/{tool_id}        — Remove
-    POST   /api/v1/tenants/{id}/tools/{tool_id}/test   — Run it for real
-    POST   /api/v1/tenants/{id}/tools/{tool_id}/reset  — Back to the preset
+    GET    /api/v1/accounts/{id}/tools                  — List
+    POST   /api/v1/accounts/{id}/tools                  — Add
+    GET    /api/v1/accounts/{id}/tools/presets          — Built-in catalogue
+    POST   /api/v1/accounts/{id}/tools/install-presets  — Install presets
+    GET    /api/v1/accounts/{id}/tools/{tool_id}        — Get one
+    PUT    /api/v1/accounts/{id}/tools/{tool_id}        — Edit
+    DELETE /api/v1/accounts/{id}/tools/{tool_id}        — Remove
+    POST   /api/v1/accounts/{id}/tools/{tool_id}/test   — Run it for real
+    POST   /api/v1/accounts/{id}/tools/{tool_id}/reset  — Back to the preset
 
 The test route is the one to keep honest. A tool is a template over an HTTP
 call, and a template typo is invisible until a customer is on the line — so the
@@ -23,7 +23,7 @@ the agent would have said about it.
 Route order matters: /presets and /install-presets are declared before
 /{tool_id}, or FastAPI would try to parse "presets" as a UUID.
 
-All routes require JWT authentication and are scoped to the caller's tenant.
+All routes require JWT authentication and are scoped to the caller's account.
 """
 
 from uuid import UUID
@@ -36,7 +36,7 @@ from app.database import get_db
 from app.logger import get_logger
 from app.middleware.auth import get_current_user
 from app.models.admin_user import AdminUser
-from app.models.tenant import Tenant
+from app.models.account import Account
 from app.redis_client import get_redis
 from app.schemas.tool import (
     PresetInstallRequest,
@@ -52,7 +52,7 @@ from app.schemas.tool import (
     _validate_parameters,
 )
 from app.services.action_router import ActionRouter
-from app.services.tenant_service import TenantService
+from app.services.account_service import AccountService
 from app.services.tool_presets import PRESET_MAP, PRESETS
 from app.services.tool_registry import ToolConflictError, ToolRegistry
 from app.services.tool_result import format_tool_result
@@ -60,7 +60,7 @@ from app.services.tool_spec import ToolSpec, ToolTemplateError, build_request
 
 logger = get_logger(__name__)
 
-router = APIRouter(prefix="/api/v1/tenants", tags=["Tools"])
+router = APIRouter(prefix="/api/v1/accounts", tags=["Tools"])
 
 
 def _get_registry(
@@ -70,26 +70,26 @@ def _get_registry(
     return ToolRegistry(db=db, redis=redis)
 
 
-def _get_tenant_service(
+def _get_account_service(
     db: AsyncSession = Depends(get_db),
     redis: Redis = Depends(get_redis),
-) -> TenantService:
-    return TenantService(db=db, redis=redis)
+) -> AccountService:
+    return AccountService(db=db, redis=redis)
 
 
-async def _require_tenant(
-    tenant_id: UUID,
+async def _require_account(
+    account_id: UUID,
     current_user: AdminUser,
-    tenant_service: TenantService,
-) -> Tenant:
-    """Load the tenant, enforcing the caller's access scope."""
-    tenant = await tenant_service.get_tenant(tenant_id, current_user)
-    if tenant is None:
+    account_service: AccountService,
+) -> Account:
+    """Load the account, enforcing the caller's access scope."""
+    account = await account_service.get_account(account_id, current_user)
+    if account is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Tenant not found",
+            detail="Account not found",
         )
-    return tenant
+    return account
 
 
 # ----------------------------------------------------------------
@@ -98,23 +98,23 @@ async def _require_tenant(
 
 
 @router.get(
-    "/{tenant_id}/tools",
+    "/{account_id}/tools",
     response_model=ToolListResponse,
     summary="List Tools",
     description=(
-        "Every tool configured for this tenant, enabled or not. A tenant with "
+        "Every tool configured for this account, enabled or not. A account with "
         "no tools of its own runs on the built-in restaurant set, which the "
         "`using_preset_fallback` flag reports."
     ),
 )
 async def list_tools(
-    tenant_id: UUID,
+    account_id: UUID,
     current_user: AdminUser = Depends(get_current_user),
-    tenant_service: TenantService = Depends(_get_tenant_service),
+    account_service: AccountService = Depends(_get_account_service),
     registry: ToolRegistry = Depends(_get_registry),
 ):
-    await _require_tenant(tenant_id, current_user, tenant_service)
-    rows = await registry.list_tools(tenant_id)
+    await _require_account(account_id, current_user, account_service)
+    rows = await registry.list_tools(account_id)
     return ToolListResponse(
         tools=[ToolResponse.model_validate(r) for r in rows],
         total=len(rows),
@@ -124,21 +124,21 @@ async def list_tools(
 
 
 @router.post(
-    "/{tenant_id}/tools",
+    "/{account_id}/tools",
     response_model=ToolResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Create Tool",
 )
 async def create_tool(
-    tenant_id: UUID,
+    account_id: UUID,
     payload: ToolCreate,
     current_user: AdminUser = Depends(get_current_user),
-    tenant_service: TenantService = Depends(_get_tenant_service),
+    account_service: AccountService = Depends(_get_account_service),
     registry: ToolRegistry = Depends(_get_registry),
 ):
-    await _require_tenant(tenant_id, current_user, tenant_service)
+    await _require_account(account_id, current_user, account_service)
     try:
-        tool = await registry.create_tool(tenant_id, payload.model_dump())
+        tool = await registry.create_tool(account_id, payload.model_dump())
     except ToolConflictError as e:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
     return tool
@@ -150,23 +150,23 @@ async def create_tool(
 
 
 @router.get(
-    "/{tenant_id}/tools/presets",
+    "/{account_id}/tools/presets",
     response_model=ToolPresetListResponse,
     summary="List Built-in Tool Presets",
     description=(
         "The standard restaurant tools — menu lookups, ordering, order status, "
         "cancellation and payment details — ready to install. `installed` says "
-        "which this tenant already has."
+        "which this account already has."
     ),
 )
 async def list_presets(
-    tenant_id: UUID,
+    account_id: UUID,
     current_user: AdminUser = Depends(get_current_user),
-    tenant_service: TenantService = Depends(_get_tenant_service),
+    account_service: AccountService = Depends(_get_account_service),
     registry: ToolRegistry = Depends(_get_registry),
 ):
-    await _require_tenant(tenant_id, current_user, tenant_service)
-    installed = {r.name for r in await registry.list_tools(tenant_id)}
+    await _require_account(account_id, current_user, account_service)
+    installed = {r.name for r in await registry.list_tools(account_id)}
 
     presets = [
         ToolPreset(
@@ -188,7 +188,7 @@ async def list_presets(
 
 
 @router.post(
-    "/{tenant_id}/tools/install-presets",
+    "/{account_id}/tools/install-presets",
     response_model=ToolListResponse,
     summary="Install Built-in Tool Presets",
     description=(
@@ -198,13 +198,13 @@ async def list_presets(
     ),
 )
 async def install_presets(
-    tenant_id: UUID,
+    account_id: UUID,
     payload: PresetInstallRequest,
     current_user: AdminUser = Depends(get_current_user),
-    tenant_service: TenantService = Depends(_get_tenant_service),
+    account_service: AccountService = Depends(_get_account_service),
     registry: ToolRegistry = Depends(_get_registry),
 ):
-    await _require_tenant(tenant_id, current_user, tenant_service)
+    await _require_account(account_id, current_user, account_service)
 
     if payload.names:
         unknown = [n for n in payload.names if n not in PRESET_MAP]
@@ -214,9 +214,9 @@ async def install_presets(
                 detail=f"Unknown preset(s): {', '.join(unknown)}",
             )
 
-    await registry.seed_presets(tenant_id, payload.names)
+    await registry.seed_presets(account_id, payload.names)
 
-    rows = await registry.list_tools(tenant_id)
+    rows = await registry.list_tools(account_id)
     return ToolListResponse(
         tools=[ToolResponse.model_validate(r) for r in rows],
         total=len(rows),
@@ -231,19 +231,19 @@ async def install_presets(
 
 
 @router.get(
-    "/{tenant_id}/tools/{tool_id}",
+    "/{account_id}/tools/{tool_id}",
     response_model=ToolResponse,
     summary="Get Tool",
 )
 async def get_tool(
-    tenant_id: UUID,
+    account_id: UUID,
     tool_id: UUID,
     current_user: AdminUser = Depends(get_current_user),
-    tenant_service: TenantService = Depends(_get_tenant_service),
+    account_service: AccountService = Depends(_get_account_service),
     registry: ToolRegistry = Depends(_get_registry),
 ):
-    await _require_tenant(tenant_id, current_user, tenant_service)
-    tool = await registry.get_tool(tenant_id, tool_id)
+    await _require_account(account_id, current_user, account_service)
+    tool = await registry.get_tool(account_id, tool_id)
     if tool is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Tool not found"
@@ -252,7 +252,7 @@ async def get_tool(
 
 
 @router.put(
-    "/{tenant_id}/tools/{tool_id}",
+    "/{account_id}/tools/{tool_id}",
     response_model=ToolResponse,
     summary="Update Tool",
     description=(
@@ -262,16 +262,16 @@ async def get_tool(
     ),
 )
 async def update_tool(
-    tenant_id: UUID,
+    account_id: UUID,
     tool_id: UUID,
     payload: ToolUpdate,
     current_user: AdminUser = Depends(get_current_user),
-    tenant_service: TenantService = Depends(_get_tenant_service),
+    account_service: AccountService = Depends(_get_account_service),
     registry: ToolRegistry = Depends(_get_registry),
 ):
-    await _require_tenant(tenant_id, current_user, tenant_service)
+    await _require_account(account_id, current_user, account_service)
 
-    tool = await registry.get_tool(tenant_id, tool_id)
+    tool = await registry.get_tool(account_id, tool_id)
     if tool is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Tool not found"
@@ -281,7 +281,7 @@ async def update_tool(
     _validate_merged(tool, changes)
 
     try:
-        updated = await registry.update_tool(tenant_id, tool_id, changes)
+        updated = await registry.update_tool(account_id, tool_id, changes)
     except ToolConflictError as e:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
 
@@ -293,7 +293,7 @@ async def update_tool(
 
 
 @router.delete(
-    "/{tenant_id}/tools/{tool_id}",
+    "/{account_id}/tools/{tool_id}",
     status_code=status.HTTP_204_NO_CONTENT,
     summary="Delete Tool",
     description=(
@@ -302,14 +302,14 @@ async def update_tool(
     ),
 )
 async def delete_tool(
-    tenant_id: UUID,
+    account_id: UUID,
     tool_id: UUID,
     current_user: AdminUser = Depends(get_current_user),
-    tenant_service: TenantService = Depends(_get_tenant_service),
+    account_service: AccountService = Depends(_get_account_service),
     registry: ToolRegistry = Depends(_get_registry),
 ):
-    await _require_tenant(tenant_id, current_user, tenant_service)
-    if not await registry.delete_tool(tenant_id, tool_id):
+    await _require_account(account_id, current_user, account_service)
+    if not await registry.delete_tool(account_id, tool_id):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Tool not found"
         )
@@ -317,7 +317,7 @@ async def delete_tool(
 
 
 @router.post(
-    "/{tenant_id}/tools/{tool_id}/reset",
+    "/{account_id}/tools/{tool_id}/reset",
     response_model=ToolResponse,
     summary="Reset Tool To Preset",
     description=(
@@ -327,15 +327,15 @@ async def delete_tool(
     ),
 )
 async def reset_tool(
-    tenant_id: UUID,
+    account_id: UUID,
     tool_id: UUID,
     current_user: AdminUser = Depends(get_current_user),
-    tenant_service: TenantService = Depends(_get_tenant_service),
+    account_service: AccountService = Depends(_get_account_service),
     registry: ToolRegistry = Depends(_get_registry),
 ):
-    await _require_tenant(tenant_id, current_user, tenant_service)
+    await _require_account(account_id, current_user, account_service)
 
-    tool = await registry.get_tool(tenant_id, tool_id)
+    tool = await registry.get_tool(account_id, tool_id)
     if tool is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Tool not found"
@@ -349,7 +349,7 @@ async def reset_tool(
             ),
         )
 
-    return await registry.reset_to_preset(tenant_id, tool_id)
+    return await registry.reset_to_preset(account_id, tool_id)
 
 
 # ----------------------------------------------------------------
@@ -358,37 +358,37 @@ async def reset_tool(
 
 
 @router.post(
-    "/{tenant_id}/tools/{tool_id}/test",
+    "/{account_id}/tools/{tool_id}/test",
     response_model=ToolTestResponse,
     summary="Test Tool",
     description=(
-        "Run the tool against the tenant's real API with the arguments you "
+        "Run the tool against the account's real API with the arguments you "
         "supply, exactly as the agent would. The response includes the resolved "
         "request, so a template mistake is visible immediately.\n\n"
         "This is a real call: testing create_order places an order."
     ),
 )
 async def test_tool(
-    tenant_id: UUID,
+    account_id: UUID,
     tool_id: UUID,
     payload: ToolTestRequest,
     current_user: AdminUser = Depends(get_current_user),
-    tenant_service: TenantService = Depends(_get_tenant_service),
+    account_service: AccountService = Depends(_get_account_service),
     registry: ToolRegistry = Depends(_get_registry),
 ):
-    tenant = await _require_tenant(tenant_id, current_user, tenant_service)
+    account = await _require_account(account_id, current_user, account_service)
 
-    tool = await registry.get_tool(tenant_id, tool_id)
+    tool = await registry.get_tool(account_id, tool_id)
     if tool is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Tool not found"
         )
 
-    if not tenant.api_base_url:
+    if not account.api_base_url:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
-                "This tenant has no API base URL configured, so there is nothing "
+                "This account has no API base URL configured, so there is nothing "
                 "to call. Set it under API Connection first."
             ),
         )
@@ -405,7 +405,7 @@ async def test_tool(
     try:
         request = build_request(
             spec=spec,
-            api_base_url=tenant.api_base_url.rstrip("/"),
+            api_base_url=account.api_base_url.rstrip("/"),
             args=args,
         )
     except ToolTemplateError as e:
@@ -425,7 +425,7 @@ async def test_tool(
     result = await router_svc.execute(
         function_name=spec.name,
         arguments=args,
-        tenant=tenant,
+        account=account,
         restaurant_id=payload.restaurant_id,
         tools={spec.name: spec},
     )
@@ -434,7 +434,7 @@ async def test_tool(
 
     logger.info(
         "tool_tested",
-        tenant_id=str(tenant_id),
+        account_id=str(account_id),
         name=spec.name,
         success=succeeded,
         tested_by=str(current_user.id),

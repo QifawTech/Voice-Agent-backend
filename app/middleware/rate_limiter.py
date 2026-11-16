@@ -1,8 +1,8 @@
 """
 Voice Agent Platform — Rate Limiter Middleware
 
-Redis-based sliding window rate limiter for tenant API requests.
-Enforces per-tenant limits to prevent abuse:
+Redis-based sliding window rate limiter for account API requests.
+Enforces per-account limits to prevent abuse:
     - Messages: 100 per minute
     - Orders: 10 per minute
 
@@ -14,7 +14,7 @@ Usage:
 
     @router.post("/voice/message")
     async def voice_message(
-        tenant: Tenant = Depends(get_current_tenant),
+        account: Account = Depends(get_current_account),
         _rate_limit: None = Depends(check_message_rate_limit),
     ):
         ...
@@ -48,12 +48,12 @@ RATE_LIMITS = {
 
 
 async def _check_rate_limit(
-    tenant_id: str,
+    account_id: str,
     limit_type: RateLimitType,
     redis: Redis,
 ) -> None:
     """
-    Check if a tenant has exceeded their rate limit.
+    Check if a account has exceeded their rate limit.
 
     Uses a Redis sorted set as a sliding window:
     1. Remove entries older than the window
@@ -62,7 +62,7 @@ async def _check_rate_limit(
     4. If over limit, raise 429 Too Many Requests
 
     Args:
-        tenant_id: The tenant UUID string.
+        account_id: The account UUID string.
         limit_type: The type of operation being rate-limited.
         redis: The Redis connection.
 
@@ -71,8 +71,8 @@ async def _check_rate_limit(
     """
     max_requests, window_seconds = RATE_LIMITS[limit_type]
 
-    # Redis key: rate_limit:{type}:{tenant_id}
-    key = f"rate_limit:{limit_type.value}:{tenant_id}"
+    # Redis key: rate_limit:{type}:{account_id}
+    key = f"rate_limit:{limit_type.value}:{account_id}"
 
     now = time.time()
     window_start = now - window_seconds
@@ -89,7 +89,7 @@ async def _check_rate_limit(
     # 3. Add current timestamp (score = timestamp, member = unique timestamp)
     pipe.zadd(key, {f"{now}": now})
 
-    # 4. Set expiry on the key (cleanup if tenant goes idle)
+    # 4. Set expiry on the key (cleanup if account goes idle)
     pipe.expire(key, window_seconds + 10)
 
     results = await pipe.execute()
@@ -104,7 +104,7 @@ async def _check_rate_limit(
 
         logger.warning(
             "rate_limit_exceeded",
-            tenant_id=tenant_id,
+            account_id=account_id,
             limit_type=limit_type.value,
             current_count=current_count,
             max_requests=max_requests,
@@ -125,7 +125,7 @@ async def _check_rate_limit(
 
     logger.debug(
         "rate_limit_check_passed",
-        tenant_id=tenant_id,
+        account_id=account_id,
         limit_type=limit_type.value,
         current_count=current_count + 1,
         max_requests=max_requests,
@@ -133,11 +133,15 @@ async def _check_rate_limit(
 
 
 async def check_message_rate_limit(
+    x_account_id: str | None = Header(default=None, alias="X-Account-ID"),
     x_tenant_id: str | None = Header(default=None, alias="X-Tenant-ID"),
     redis: Redis = Depends(get_redis),
 ) -> None:
     """
-    FastAPI dependency: enforce message rate limit (100/min per tenant).
+    FastAPI dependency: enforce message rate limit (100/min per account).
+
+    X-Tenant-ID is the old name for this header and is still accepted, because
+    integrations written before the rename still send it.
 
     Use on voice message endpoints:
         @router.post("/voice/message")
@@ -146,16 +150,20 @@ async def check_message_rate_limit(
         ):
             ...
     """
-    if x_tenant_id:
-        await _check_rate_limit(x_tenant_id, RateLimitType.MESSAGE, redis)
+    account_id = x_account_id or x_tenant_id
+    if account_id:
+        await _check_rate_limit(account_id, RateLimitType.MESSAGE, redis)
 
 
 async def check_order_rate_limit(
+    x_account_id: str | None = Header(default=None, alias="X-Account-ID"),
     x_tenant_id: str | None = Header(default=None, alias="X-Tenant-ID"),
     redis: Redis = Depends(get_redis),
 ) -> None:
     """
-    FastAPI dependency: enforce order rate limit (10/min per tenant).
+    FastAPI dependency: enforce order rate limit (10/min per account).
+
+    X-Tenant-ID is the old name for this header and is still accepted.
 
     Use on order creation endpoints:
         @router.post("/voice/order")
@@ -164,24 +172,25 @@ async def check_order_rate_limit(
         ):
             ...
     """
-    if x_tenant_id:
-        await _check_rate_limit(x_tenant_id, RateLimitType.ORDER, redis)
+    account_id = x_account_id or x_tenant_id
+    if account_id:
+        await _check_rate_limit(account_id, RateLimitType.ORDER, redis)
 
 
-async def check_rate_limit_for_tenant(
-    tenant_id: UUID,
+async def check_rate_limit_for_account(
+    account_id: UUID,
     limit_type: RateLimitType,
     redis: Redis,
 ) -> None:
     """
     Programmatic rate limit check (not a FastAPI dependency).
 
-    Use this when you have the tenant_id directly (e.g., inside the
+    Use this when you have the account_id directly (e.g., inside the
     conversation engine) instead of extracting it from headers.
 
     Args:
-        tenant_id: The tenant UUID.
+        account_id: The account UUID.
         limit_type: MESSAGE or ORDER.
         redis: The Redis connection.
     """
-    await _check_rate_limit(str(tenant_id), limit_type, redis)
+    await _check_rate_limit(str(account_id), limit_type, redis)

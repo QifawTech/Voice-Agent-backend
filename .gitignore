@@ -73,3 +73,6 @@ logs/
 
 # Local-only notes / env-switch cheat sheet (may hold creds)
 env-switch.txt
+
+# Personal learning notes (not part of the app)
+notes.md

@@ -12,7 +12,7 @@ Tenant admins see only their own data; super admins can see any tenant.
 """
 
 from datetime import date, datetime, timedelta, timezone
-from uuid import UUID
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select, and_, desc
@@ -67,6 +67,48 @@ def _resolve_tenant_id(user: AdminUser, tenant_id: UUID | None) -> UUID:
             detail="User is not associated with any tenant",
         )
     return user.tenant_id
+
+
+# Order item payloads are stored verbatim from each restaurant's own ordering
+# API, so the field names differ between integrations. Read the spellings we
+# have seen rather than dropping a line because one API says "item_name".
+_ITEM_NAME_KEYS = ("name", "item_name", "title", "product_name")
+_ITEM_QTY_KEYS = ("quantity", "qty", "count")
+
+
+def _item_name_and_qty(item: object) -> tuple[str, int] | None:
+    """Pull (name, quantity) out of one order-item payload, or None if absent."""
+    if not isinstance(item, dict):
+        return None
+
+    name = ""
+    for key in _ITEM_NAME_KEYS:
+        value = item.get(key)
+        if value:
+            name = str(value).strip()
+            break
+    if not name:
+        return None
+
+    quantity = 1
+    for key in _ITEM_QTY_KEYS:
+        if item.get(key) is not None:
+            try:
+                quantity = max(1, int(float(item[key])))
+            except (TypeError, ValueError):
+                quantity = 1
+            break
+
+    return name, quantity
+
+
+def _as_date(value: object) -> date | None:
+    """Normalise whatever the driver returns for a grouped date expression."""
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    return None
 
 
 # ──────────────────────────────────────────────────────────────
@@ -150,43 +192,98 @@ async def get_overview(
     )
     avg_session_duration = float(avg_duration_result.scalar() or 0)
 
-    # ── Top items (from order events) ─────────────────────────
-    # We'll aggregate from order events that have items data
-    top_items = []  # This would require parsing JSON items — simplified for now
-
-    # ── Daily breakdown from pre-computed table ───────────────
-    daily_filters = [
-        DailyAnalytics.tenant_id == effective_tenant_id,
-        DailyAnalytics.date >= period_start,
-        DailyAnalytics.date <= period_end,
-    ]
-    if restaurant_id:
-        daily_filters.append(DailyAnalytics.restaurant_id == restaurant_id)
-
-    daily_result = await db.execute(
-        select(DailyAnalytics)
-        .where(and_(*daily_filters))
-        .order_by(DailyAnalytics.date.asc())
+    # ── Daily breakdown, computed from the source rows ────────
+    # This used to read the daily_analytics table, but nothing in the service
+    # ever writes a row to it, so every dashboard chart came back empty no
+    # matter how many calls had been handled. Aggregate the same rows the
+    # totals above are counted from instead.
+    conv_day = func.date(ConversationLog.started_at).label("day")
+    conv_daily_result = await db.execute(
+        select(
+            conv_day,
+            func.count(ConversationLog.id),
+            func.coalesce(func.avg(ConversationLog.duration_seconds), 0),
+        )
+        .where(and_(*conversation_filters))
+        .group_by(conv_day)
     )
-    daily_rows = daily_result.scalars().all()
+    conversations_by_day: dict[date, tuple[int, float]] = {}
+    for day, count, avg_duration in conv_daily_result.all():
+        key = _as_date(day)
+        if key is not None:
+            conversations_by_day[key] = (int(count or 0), float(avg_duration or 0))
 
-    daily_breakdown = [
-        DailyAnalyticsResponse.model_validate(row) for row in daily_rows
-    ]
+    order_day = func.date(OrderEvent.created_at).label("day")
+    order_daily_result = await db.execute(
+        select(
+            order_day,
+            func.count(OrderEvent.id),
+            func.coalesce(func.sum(OrderEvent.order_value), 0),
+        )
+        .where(and_(*order_filters, OrderEvent.event_type == "created"))
+        .group_by(order_day)
+    )
+    orders_by_day: dict[date, tuple[int, float]] = {}
+    for day, count, revenue in order_daily_result.all():
+        key = _as_date(day)
+        if key is not None:
+            orders_by_day[key] = (int(count or 0), float(revenue or 0))
 
-    # Collect top items from daily breakdown
+    # One entry per calendar day, zeros included, so the chart draws a
+    # continuous series rather than bunching the active days together.
+    daily_breakdown: list[DailyAnalyticsResponse] = []
+    cursor = period_start
+    while cursor <= period_end:
+        conversations, avg_duration = conversations_by_day.get(cursor, (0, 0.0))
+        orders, revenue = orders_by_day.get(cursor, (0, 0.0))
+        daily_breakdown.append(
+            DailyAnalyticsResponse(
+                # Synthetic but stable: these rows are computed, not stored,
+                # and the id only has to be consistent between requests.
+                id=uuid5(
+                    NAMESPACE_URL,
+                    f"daily:{effective_tenant_id}:{restaurant_id or ''}:{cursor.isoformat()}",
+                ),
+                tenant_id=effective_tenant_id,
+                restaurant_id=restaurant_id,
+                date=cursor,
+                total_conversations=conversations,
+                total_orders=orders,
+                total_revenue=round(revenue, 2),
+                conversion_rate=(
+                    round((orders / conversations) * 100, 2) if conversations else 0.0
+                ),
+                avg_session_duration=round(avg_duration, 2),
+            )
+        )
+        cursor += timedelta(days=1)
+
+    # ── Top items, counted from the order payloads ────────────
+    # Parsed in Python rather than SQL because the JSON shape comes from the
+    # restaurant's API and is not ours to rely on. Bounded by the window.
+    items_result = await db.execute(
+        select(OrderEvent.items).where(
+            and_(
+                *order_filters,
+                OrderEvent.event_type == "created",
+                OrderEvent.items.isnot(None),
+            )
+        )
+    )
     item_counts: dict[str, int] = {}
-    for day in daily_rows:
-        if day.top_items:
-            for item in day.top_items:
-                name = item.get("name", "Unknown")
-                count = item.get("count", 0)
-                item_counts[name] = item_counts.get(name, 0) + count
+    for (payload,) in items_result.all():
+        if not isinstance(payload, list):
+            continue
+        for item in payload:
+            parsed = _item_name_and_qty(item)
+            if parsed is None:
+                continue
+            name, quantity = parsed
+            item_counts[name] = item_counts.get(name, 0) + quantity
 
     top_items = sorted(
-        [{"name": k, "count": v} for k, v in item_counts.items()],
-        key=lambda x: x["count"],
-        reverse=True,
+        ({"name": name, "count": count} for name, count in item_counts.items()),
+        key=lambda entry: (-entry["count"], entry["name"]),
     )[:10]
 
     logger.info(

@@ -34,12 +34,11 @@ if config.config_file_name is not None:
 # This will include all models that inherit from Base
 from app.database import Base
 
-# Import all models here so Alembic can detect them
-from app.models.tenant import Tenant  # noqa: F401
-from app.models.admin_user import AdminUser  # noqa: F401
-from app.models.conversation_log import ConversationLog  # noqa: F401
-from app.models.order_event import OrderEvent  # noqa: F401
-from app.models.daily_analytics import DailyAnalytics  # noqa: F401
+# Import every model so Alembic can detect it. One import of the package
+# registry rather than a list per model: the previous list had drifted and was
+# missing SubTenant and TenantTool, which makes `alembic revision
+# --autogenerate` propose dropping live tables.
+import app.models  # noqa: F401
 
 target_metadata = Base.metadata
 

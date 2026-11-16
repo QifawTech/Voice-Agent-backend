@@ -1,0 +1,177 @@
+# ============================================================
+# Production stack — runs entirely on the EC2 instance.
+# Images are BUILT here; nothing is pulled from a registry.
+#
+#   docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build
+#
+# The --env-file flag is NOT optional. Compose resolves ${VAR} from ./.env
+# by default, so omitting it silently injects your DEV LiveKit keys.
+#
+# Your existing docker-compose.yml is left alone for local dev.
+# ============================================================
+
+name: voice-agent-prod
+
+x-app-base: &app-base
+  build:
+    context: .
+    dockerfile: Dockerfile
+  image: voice-agent-backend:latest   # built locally, never pushed
+  restart: unless-stopped
+  env_file: .env.prod
+  environment:
+    # Inside the compose network, services talk by NAME, not localhost.
+    DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    REDIS_URL: redis://redis:6379/0
+    LIVEKIT_URL: ws://livekit:7880
+  volumes:
+    - model_cache:/home/app/.cache   # Silero VAD weights survive restarts
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+  logging: &default-logging
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  # ---------- infrastructure ----------
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "127.0.0.1:5432:5432"   # localhost ONLY — not reachable from internet
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    logging: *default-logging
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "127.0.0.1:6379:6379"   # localhost ONLY
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    logging: *default-logging
+
+  livekit:
+    image: livekit/livekit-server:v1.8
+    restart: unless-stopped
+    # NOT --dev. Real keys, and the public IP so callers can receive media.
+    command: --node-ip ${EC2_PUBLIC_IP}
+    environment:
+      LIVEKIT_KEYS: "${LIVEKIT_API_KEY}: ${LIVEKIT_API_SECRET}"
+      LIVEKIT_RTC_PORT_RANGE_START: "50000"
+      LIVEKIT_RTC_PORT_RANGE_END: "50060"
+      LIVEKIT_RTC_TCP_PORT: "7881"
+      LIVEKIT_RTC_USE_EXTERNAL_IP: "false"
+    ports:
+      - "7880:7880"                      # signalling (put behind TLS/nginx)
+      - "7881:7881"                      # RTC over TCP fallback
+      - "50000-50060:50000-50060/udp"    # WebRTC media
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:7880"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    logging: *default-logging
+
+  # ---------- one-shot migration job ----------
+  # Runs to completion, then exits. api/worker wait for it to succeed.
+  migrate:
+    <<: *app-base
+    restart: "no"
+    command: ["alembic", "upgrade", "head"]
+
+  # ---------- application ----------
+  api:
+    <<: *app-base
+    command:
+      - uvicorn
+      - app.main:app
+      - --host=0.0.0.0
+      - --port=8000
+      - --workers=2
+      - --proxy-headers
+      - --forwarded-allow-ips=*
+    ports:
+      - "127.0.0.1:8000:8000"   # nginx on the host terminates TLS and proxies in
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  worker:
+    <<: *app-base
+    command: ["python", "-m", "app.livekit_agent", "start"]
+    # The worker dials OUT to livekit — it needs no published ports.
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      livekit:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  # ---------- the clock ----------
+  # The reminder engine's tick, escalation and nightly top-up loops.
+  #
+  # Its own service, and deliberately NOT inside the api service: api runs
+  # --workers=2, so a scheduler started in the FastAPI lifespan would be two
+  # schedulers. The claim lock means that would still not double-send, which is
+  # exactly what makes it dangerous — every tick would do double the work and
+  # the nightly top-up would run twice, with nothing looking wrong.
+  #
+  # Exactly one replica. Scaling this service does not increase throughput
+  # (the batch size does); it only multiplies the work.
+  scheduler:
+    <<: *app-base
+    command: ["python", "-m", "app.scheduler"]
+    # Dials out to postgres and redis only — no published ports.
+    #
+    # No healthcheck here on purpose. The thing worth watching is not whether
+    # the process is up but whether the clock is ticking, and that is published
+    # as a heartbeat in Redis which /health reports. A process that is running
+    # but whose jobs have stopped would pass any healthcheck this service could
+    # declare about itself.
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  postgres_data:
+  redis_data:
+  model_cache:

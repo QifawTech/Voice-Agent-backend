@@ -177,6 +177,17 @@ def create_app() -> FastAPI:
         db_ok = await verify_database_connection()
         redis_ok = await verify_redis_connection()
 
+        # The scheduler is a separate process, so the API cannot know it is
+        # alive except by what it leaves behind: a heartbeat key in Redis with
+        # a short expiry, rewritten every tick.
+        #
+        # This is reported but does NOT make the API unhealthy, and the
+        # distinction matters. A dead scheduler means no reminders are going
+        # out, which is a far more serious failure than a sick API — but an
+        # orchestrator that restarts the API because the scheduler stopped
+        # fixes nothing and hides the real fault.
+        scheduler = await _scheduler_health()
+
         status = "ok" if (db_ok and redis_ok) else "degraded"
 
         return {
@@ -188,7 +199,31 @@ def create_app() -> FastAPI:
                 "database": "connected" if db_ok else "disconnected",
                 "redis": "connected" if redis_ok else "disconnected",
             },
+            "scheduler": scheduler,
         }
+
+    async def _scheduler_health() -> dict:
+        """Read the scheduler's heartbeat. Never raises."""
+        from app.scheduler import HEARTBEAT_KEY, LAST_RUN_KEY
+
+        try:
+            from app.redis_client import get_redis_sync
+
+            redis = get_redis_sync()
+            beat = await redis.get(HEARTBEAT_KEY)
+            last = await redis.get(LAST_RUN_KEY)
+        except Exception as exc:
+            return {"status": "unknown", "detail": str(exc)}
+
+        if not beat:
+            return {
+                "status": "stopped",
+                "detail": (
+                    "No tick in the last 5 minutes. Reminders are not being "
+                    "sent. Check the scheduler process."
+                ),
+            }
+        return {"status": "alive", "last_tick_at": beat, "last_run": last}
 
     # ---- Root Endpoint ----
     @app.get(
@@ -276,6 +311,7 @@ def create_app() -> FastAPI:
     from app.routes.analytics import router as analytics_router
     from app.routes.livekit import router as livekit_router
     from app.routes.elevenlabs import router as elevenlabs_router
+    from app.routes.reminders import router as reminders_router
 
     app.include_router(auth_router)
     app.include_router(tenant_router)
@@ -285,6 +321,7 @@ def create_app() -> FastAPI:
     app.include_router(analytics_router)
     app.include_router(livekit_router)
     app.include_router(elevenlabs_router)
+    app.include_router(reminders_router)
 
     logger.info("fastapi_app_created", routes=len(app.routes))
 

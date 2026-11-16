@@ -53,3 +53,19 @@ livekit-api>=1.0.0
 
 # Email validation for Pydantic
 email-validator>=2.1.0
+
+# ---- Reminder engine (Nudge / Vasool, phase 1) ----
+# APScheduler drives the tick, escalation and nightly top-up loops. It runs in
+# its own process (app/scheduler.py), not inside uvicorn: the API runs with
+# --workers=2, so an in-process scheduler would be two schedulers, and the
+# nightly top-up would run twice.
+apscheduler==3.11.0
+
+# Repeat rules ("monthly on the 5th") are RFC 5545 RRULEs expanded by dateutil.
+# It arrives as a transitive dependency today; pinned here because the engine
+# depends on it directly and a transitive pin can vanish without warning.
+python-dateutil==2.9.0.post0
+
+# Async SMTP. The stdlib smtplib is blocking, which would stall the whole
+# event loop — including the tick that is trying to send the next reminder.
+aiosmtplib==3.0.2

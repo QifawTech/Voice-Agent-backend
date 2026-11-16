@@ -86,6 +86,53 @@ class Settings(BaseSettings):
     # ---- Encryption ----
     ENCRYPTION_KEY: str = "dev-encryption-key-32bytes-long!!"
 
+    # ---- SMTP (the reminder engine's first real channel) ----
+    # Empty SMTP_HOST means "not configured": the email adapter then reports
+    # itself unavailable and the engine records a skipped delivery instead of
+    # pretending to have sent one. Tests never need real credentials.
+    SMTP_HOST: str = ""
+    SMTP_PORT: int = 587
+    SMTP_USERNAME: str = ""
+    SMTP_PASSWORD: str = ""
+    SMTP_FROM: str = ""
+    SMTP_FROM_NAME: str = "Reminders"
+    SMTP_USE_TLS: bool = True  # STARTTLS on 587; set false only for port 25
+    SMTP_TIMEOUT_SECONDS: int = 20
+
+    # ---- Reminder engine ----
+    # PUBLIC_BASE_URL is what the "mark it done" link in an email points at.
+    # It must be reachable by the recipient, so localhost works only while you
+    # are the recipient.
+    PUBLIC_BASE_URL: str = "http://localhost:8000"
+
+    # How far ahead occurrences are generated. Generating ahead is what makes
+    # the "next 7 days" screen a plain query and stops an outage breaking the
+    # chain — the nightly top-up is idempotent, so re-running it is free.
+    REMINDER_HORIZON_DAYS: int = 60
+
+    # Rows claimed per tick. At 500 due in the same minute this is the knob
+    # that decides whether the backlog drains or grows.
+    REMINDER_TICK_BATCH: int = 100
+
+    # Sends in flight at once. Sequential sending cannot clear a 500-reminder
+    # minute: at 200ms per email that is 100 seconds, which is longer than the
+    # tick interval it has to finish inside.
+    REMINDER_SEND_CONCURRENCY: int = 10
+
+    # A row claimed but never finished — the process died mid-send — is handed
+    # back after this long. Without this, a crash strands reminders in
+    # 'claimed' and nothing ever looks at them again.
+    REMINDER_CLAIM_TIMEOUT_MINUTES: int = 10
+
+    # Hour (UTC) of the nightly top-up. 18:00 UTC is 23:30 IST — after the
+    # evening medicine reminders have gone out, before midnight.
+    REMINDER_TOPUP_HOUR_UTC: int = 18
+
+    @property
+    def smtp_configured(self) -> bool:
+        """Whether the email channel has enough settings to send anything."""
+        return bool(self.SMTP_HOST and self.SMTP_FROM)
+
     @property
     def cors_origins_list(self) -> list[str]:
         """Parse comma-separated CORS origins into a list."""

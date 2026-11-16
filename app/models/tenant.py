@@ -96,6 +96,14 @@ class Tenant(Base):
 
     # ---- Relationships ----
     admin_users = relationship("AdminUser", back_populates="tenant", lazy="selectin")
+    # The agents this account owns. A restaurant tenant has no rows here and is
+    # unaffected; see app/models/agent.py on why account_id points at tenants.id.
+    agents = relationship(
+        "Agent",
+        back_populates="account",
+        lazy="selectin",
+        cascade="all, delete-orphan",
+    )
     sub_tenants = relationship(
         "SubTenant",
         back_populates="tenant",

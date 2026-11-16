@@ -139,6 +139,18 @@ class Reminder(Base):
     # ---- Status ----
     is_paused: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
+    # Deleted, but not gone. The row stays because its past occurrences and
+    # their delivery log are the answer to "was she reminded on the 9th?", and
+    # deleting the rule is no reason to lose that. A deleted reminder is hidden
+    # from every list, generates nothing, and is never claimed.
+    #
+    # Separate from is_paused on purpose: pausing is "not for now" and is meant
+    # to be undone, deleting is "never again". One flag covering both would
+    # make the resume button in the interface either wrong or dangerous.
+    deleted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     # How far occurrences have been generated. Lets the nightly top-up skip
     # reminders it has already covered instead of re-expanding every rule every
     # night. Advisory only: the unique index is what actually prevents

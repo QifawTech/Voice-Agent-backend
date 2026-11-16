@@ -184,6 +184,7 @@ class ReminderEngine:
                 Occurrence.status == "scheduled",
                 Occurrence.due_at <= now,
                 Reminder.is_paused.is_(False),
+                Reminder.deleted_at.is_(None),
                 Agent.is_active.is_(True),
             )
             # Oldest first: after an outage the backlog drains in the order
@@ -425,6 +426,7 @@ class ReminderEngine:
                 Occurrence.next_attempt_at.is_not(None),
                 Occurrence.next_attempt_at <= now,
                 Reminder.is_paused.is_(False),
+                Reminder.deleted_at.is_(None),
             )
             .order_by(Occurrence.next_attempt_at)
             .limit(limit)
@@ -843,6 +845,7 @@ class ReminderEngine:
                 .options(joinedload(Reminder.person))
                 .where(
                     Reminder.is_paused.is_(False),
+                    Reminder.deleted_at.is_(None),
                     Agent.is_active.is_(True),
                 )
             )

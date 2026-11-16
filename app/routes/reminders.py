@@ -50,14 +50,19 @@ from app.schemas.reminder import (
     AgendaResponse,
     AgentCreate,
     AgentResponse,
+    AgentUpdate,
     AnswerResponse,
     OccurrenceResponse,
     PersonCreate,
     PersonResponse,
+    PersonUpdate,
     ReminderCreate,
     ReminderCreated,
     ReminderResponse,
+    ReminderUpdate,
+    ReminderUpdated,
     SnoozeRequest,
+    check_schedule,
 )
 from app.services import occurrence_generator
 from app.services.answer_tokens import verify_token
@@ -98,6 +103,30 @@ async def _require_agent(
         raise HTTPException(status_code=404, detail="Agent not found")
 
     return agent
+
+
+async def _require_reminder(
+    agent_id: UUID, reminder_id: UUID, db: AsyncSession
+) -> Reminder:
+    """
+    Load a reminder that belongs to this agent and has not been deleted.
+
+    Call after _require_agent, which is what checks the caller may see this
+    agent at all. A deleted reminder is treated as absent rather than as
+    something to be revived: undeleting is not a feature, and quietly editing
+    a deleted rule back into existence would be a surprising way to get one.
+    """
+    result = await db.execute(
+        select(Reminder).where(
+            Reminder.id == reminder_id,
+            Reminder.agent_id == agent_id,
+            Reminder.deleted_at.is_(None),
+        )
+    )
+    reminder = result.scalar_one_or_none()
+    if reminder is None:
+        raise HTTPException(status_code=404, detail="Reminder not found")
+    return reminder
 
 
 async def _require_occurrence(
@@ -200,6 +229,44 @@ async def list_agents(
     return list(result.scalars().all())
 
 
+@router.patch(
+    "/agents/{agent_id}",
+    response_model=AgentResponse,
+    summary="Edit Agent",
+    description=(
+        "Renames an agent, swaps its voice settings, or switches it off. "
+        "Switching an agent off stops every reminder on it being claimed, "
+        "without touching the occurrences themselves, so switching it back on "
+        "resumes rather than restarts.\n\n"
+        "Type and slug cannot be changed: the type decides which generator "
+        "writes the occurrences, and the slug is in the URL of every link to "
+        "this agent."
+    ),
+)
+async def update_agent(
+    agent_id: UUID,
+    payload: AgentUpdate,
+    current_user: AdminUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    agent = await _require_agent(agent_id, current_user, db)
+
+    changes = payload.model_dump(exclude_unset=True)
+    for field, value in changes.items():
+        setattr(agent, field, value)
+
+    await db.commit()
+    await db.refresh(agent)
+
+    logger.info(
+        "agent_updated",
+        agent_id=str(agent.id),
+        fields=sorted(changes.keys()),
+        is_active=agent.is_active,
+    )
+    return agent
+
+
 # ----------------------------------------------------------------
 # People
 # ----------------------------------------------------------------
@@ -268,6 +335,64 @@ async def list_people(
         select(Person).where(Person.agent_id == agent_id).order_by(Person.name)
     )
     return list(result.scalars().all())
+
+
+@router.patch(
+    "/agents/{agent_id}/people/{person_id}",
+    response_model=PersonResponse,
+    summary="Edit Person",
+    description=(
+        "Corrects someone's details — a mistyped phone number, a move to a "
+        "different timezone, the wrong language.\n\n"
+        "Consent and opt-out are not editable here. Consent is a record of "
+        "something that happened, with a time and a name against it, not a "
+        "checkbox. And a person who said STOP stays stopped: if that could be "
+        "undone from this route, one account could get the platform's sending "
+        "number reported and take every other account down with it."
+    ),
+)
+async def update_person(
+    agent_id: UUID,
+    person_id: UUID,
+    payload: PersonUpdate,
+    current_user: AdminUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await _require_agent(agent_id, current_user, db)
+
+    result = await db.execute(
+        select(Person).where(Person.id == person_id, Person.agent_id == agent_id)
+    )
+    person = result.scalar_one_or_none()
+    if person is None:
+        raise HTTPException(status_code=404, detail="Person not found")
+
+    changes = payload.model_dump(exclude_unset=True)
+    for field, value in changes.items():
+        setattr(person, field, value)
+
+    # Checked against the merged person, not the patch: clearing the only
+    # email on someone whose ladder is email-only would leave a reminder that
+    # can never be delivered, and the failure would not show up until the
+    # night it was due.
+    if not (person.phone or person.whatsapp or person.email):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"{person.name} would be left with no phone, WhatsApp or "
+                "email, so no reminder could ever reach them."
+            ),
+        )
+
+    await db.commit()
+    await db.refresh(person)
+
+    logger.info(
+        "person_updated",
+        person_id=str(person.id),
+        fields=sorted(changes.keys()),
+    )
+    return person
 
 
 # ----------------------------------------------------------------
@@ -385,10 +510,174 @@ async def list_reminders(
     await _require_agent(agent_id, current_user, db)
     result = await db.execute(
         select(Reminder)
-        .where(Reminder.agent_id == agent_id)
+        .where(Reminder.agent_id == agent_id, Reminder.deleted_at.is_(None))
         .order_by(Reminder.created_at.desc())
     )
     return list(result.scalars().all())
+
+
+@router.patch(
+    "/agents/{agent_id}/reminders/{reminder_id}",
+    response_model=ReminderUpdated,
+    summary="Edit Reminder",
+    description=(
+        "Changes the rule, and regenerates the future if the schedule moved. "
+        "Occurrences already sent, done or missed are history and are never "
+        "touched — only moments still waiting are replaced. The response says "
+        "how many were dropped and how many took their place, because an edit "
+        "that quietly empties the queue looks exactly like one that worked "
+        "until the night nobody is reminded."
+    ),
+)
+async def update_reminder(
+    agent_id: UUID,
+    reminder_id: UUID,
+    payload: ReminderUpdate,
+    current_user: AdminUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    engine: ReminderEngine = Depends(_get_engine),
+):
+    await _require_agent(agent_id, current_user, db)
+    reminder = await _require_reminder(agent_id, reminder_id, db)
+
+    changes = payload.model_dump(exclude_unset=True)
+    schedule_changed = payload.touches_schedule()
+
+    # Check the schedule the reminder will HAVE, not the handful of fields
+    # being sent. A reminder that is an expiry and receives only a new rrule
+    # would pass every field validator and then generate nothing at all.
+    if schedule_changed:
+        merged_kind = changes.get("schedule_kind", reminder.schedule_kind)
+        merged_rrule = changes.get("rrule", reminder.rrule)
+        merged_due = changes.get("due_date", reminder.due_date)
+        merged_warn = changes.get("warn_before_days", reminder.warn_before_days)
+        try:
+            normalised = check_schedule(
+                merged_kind, merged_rrule, merged_due, merged_warn
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if merged_kind == "expiry":
+            changes["warn_before_days"] = normalised or []
+
+    for field, value in changes.items():
+        setattr(reminder, field, value)
+
+    cancelled = 0
+    created = 0
+
+    if schedule_changed:
+        # Drop what has not happened yet and rebuild it. `claimed` is included
+        # because a claim is the tick saying "I am about to send this" — if the
+        # schedule just moved, that send is no longer wanted. Anything already
+        # sent, done, missed, snoozed or cancelled stays exactly as it is.
+        now = utcnow()
+        doomed = await db.execute(
+            select(Occurrence).where(
+                Occurrence.reminder_id == reminder.id,
+                Occurrence.due_at > now,
+                Occurrence.status.in_(["scheduled", "claimed"]),
+            )
+        )
+        for occurrence in doomed.scalars().all():
+            await db.delete(occurrence)
+            cancelled += 1
+
+        # generated_through is how the nightly top-up knows where it got to.
+        # Leaving it where it was would make the top-up skip the window it has
+        # just been asked to rebuild.
+        reminder.generated_through = None
+
+    await db.commit()
+    await db.refresh(reminder)
+
+    if schedule_changed:
+        created = await engine.generate_for(reminder)
+
+    next_row = await db.execute(
+        select(Occurrence)
+        .where(
+            Occurrence.reminder_id == reminder.id,
+            Occurrence.status == "scheduled",
+        )
+        .order_by(Occurrence.due_at)
+        .limit(1)
+    )
+    nxt = next_row.scalar_one_or_none()
+
+    logger.info(
+        "reminder_updated",
+        reminder_id=str(reminder.id),
+        fields=sorted(changes.keys()),
+        schedule_changed=schedule_changed,
+        occurrences_cancelled=cancelled,
+        occurrences_created=created,
+    )
+
+    return ReminderUpdated(
+        reminder=ReminderResponse.model_validate(reminder),
+        schedule=occurrence_generator.describe(reminder),
+        occurrences_created=created,
+        occurrences_cancelled=cancelled,
+        schedule_changed=schedule_changed,
+        next_due_at=nxt.due_at if nxt else None,
+        next_due_local=nxt.local_due_at if nxt else None,
+    )
+
+
+@router.delete(
+    "/agents/{agent_id}/reminders/{reminder_id}",
+    status_code=status.HTTP_200_OK,
+    summary="Delete Reminder",
+    description=(
+        "Stops a reminder for good. Moments still ahead are cancelled; "
+        "everything already sent stays, with its delivery log, because that "
+        "history is the answer to 'did she get reminded on the 9th?' and "
+        "deleting the rule is not a reason to lose it."
+    ),
+)
+async def delete_reminder(
+    agent_id: UUID,
+    reminder_id: UUID,
+    current_user: AdminUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await _require_agent(agent_id, current_user, db)
+    reminder = await _require_reminder(agent_id, reminder_id, db)
+
+    now = utcnow()
+    ahead = await db.execute(
+        select(Occurrence).where(
+            Occurrence.reminder_id == reminder.id,
+            Occurrence.due_at > now,
+            Occurrence.status.in_(["scheduled", "claimed"]),
+        )
+    )
+    cancelled = 0
+    for occurrence in ahead.scalars().all():
+        occurrence.status = "cancelled"
+        occurrence.outcome_reason = "The reminder was deleted."
+        cancelled += 1
+
+    # The row stays so its past occurrences keep a parent to point at, and so
+    # the delivery log under them survives. deleted_at hides it from every
+    # list, stops the nightly top-up generating from it, and stops the tick
+    # claiming anything of its own.
+    reminder.deleted_at = utcnow()
+
+    await db.commit()
+
+    logger.info(
+        "reminder_deleted",
+        reminder_id=str(reminder.id),
+        occurrences_cancelled=cancelled,
+    )
+
+    return {
+        "deleted": True,
+        "occurrences_cancelled": cancelled,
+        "history_kept": True,
+    }
 
 
 @router.post(
@@ -410,15 +699,7 @@ async def send_now(
     engine: ReminderEngine = Depends(_get_engine),
 ):
     await _require_agent(agent_id, current_user, db)
-
-    result = await db.execute(
-        select(Reminder).where(
-            Reminder.id == reminder_id, Reminder.agent_id == agent_id
-        )
-    )
-    reminder = result.scalar_one_or_none()
-    if reminder is None:
-        raise HTTPException(status_code=404, detail="Reminder not found")
+    reminder = await _require_reminder(agent_id, reminder_id, db)
 
     now = utcnow()
     occurrence = Occurrence(
@@ -478,7 +759,11 @@ async def agenda(
         select(Occurrence)
         .join(Reminder, Reminder.id == Occurrence.reminder_id)
         .options(joinedload(Occurrence.reminder).joinedload(Reminder.person))
-        .where(Reminder.agent_id == agent_id, Occurrence.due_at <= horizon)
+        .where(
+            Reminder.agent_id == agent_id,
+            Reminder.deleted_at.is_(None),
+            Occurrence.due_at <= horizon,
+        )
         .order_by(Occurrence.due_at)
     )
     if not include_closed:

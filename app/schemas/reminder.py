@@ -37,6 +37,51 @@ from app.services.occurrence_generator import (
 from app.services.timekeeping import UnknownTimezone, validate_timezone
 
 
+def check_schedule(
+    schedule_kind: str,
+    rrule: str | None,
+    due_date: date | None,
+    warn_before_days: list[int] | None,
+) -> list[int] | None:
+    """
+    Check that a schedule is one the generator can actually expand, and return
+    the normalised warning days.
+
+    Lives outside the models because an edit has to be checked the same way a
+    creation is, against the merged result rather than against the patch. A
+    reminder that was repeating and is sent only a new due_date would otherwise
+    pass field validation and then quietly stop producing anything.
+
+    Raises ValueError, so it reads as a 422 wherever Pydantic calls it.
+    """
+    try:
+        if schedule_kind == "repeating":
+            if not rrule:
+                raise InvalidSchedule(
+                    "A repeating reminder needs a repeat rule, for example "
+                    "FREQ=MONTHLY;BYMONTHDAY=5 for the 5th of each month."
+                )
+            validate_rrule(rrule)
+            return warn_before_days
+
+        if schedule_kind == "expiry":
+            if due_date is None:
+                raise InvalidSchedule(
+                    "An expiry reminder needs the date it expires on."
+                )
+            return normalise_warn_before_days(warn_before_days)
+
+        if schedule_kind == "balance":
+            raise InvalidSchedule(
+                "Balance-check reminders are not built yet: they need a "
+                "per-provider API call to know whether anything is due."
+            )
+    except InvalidSchedule as exc:
+        raise ValueError(str(exc)) from exc
+
+    return warn_before_days
+
+
 # ----------------------------------------------------------------
 # Agents
 # ----------------------------------------------------------------
@@ -72,6 +117,27 @@ class AgentCreate(BaseModel):
                 "A slug may contain only letters, numbers and hyphens."
             )
         return cleaned
+
+
+class AgentUpdate(BaseModel):
+    """
+    What may be changed on an agent after it exists.
+
+    `type` and `slug` are absent on purpose. The type decides which generator
+    writes the occurrences, and the slug is in the URL of every bookmark and
+    link to this agent; changing either silently breaks things that already
+    work. Delete and recreate if one is genuinely wrong.
+    """
+
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    voice_config: dict | None = None
+    is_active: bool | None = Field(
+        default=None,
+        description=(
+            "Setting this false stops every reminder on this agent being "
+            "claimed. Existing occurrences are left where they are."
+        ),
+    )
 
 
 class AgentResponse(BaseModel):
@@ -137,6 +203,51 @@ class PersonCreate(BaseModel):
                 "contact anyone whose consent has not been recorded."
             )
         return self
+
+
+class PersonUpdate(BaseModel):
+    """
+    Correcting someone's details after the fact — a mistyped phone number, a
+    move to a different timezone, the wrong language.
+
+    Three fields are deliberately absent:
+
+        consent_confirmed   consent is a record of something that happened,
+                            with a timestamp and a name against it. It is not
+                            a checkbox to be toggled later.
+        opted_out_at        a person who said STOP stays stopped. The plan is
+                            blunt about this: if an owner can re-enable
+                            someone who opted out, the platform's sending
+                            number gets reported and every other account on it
+                            goes dark.
+        opt_out_reason      same reasoning.
+
+    Every field is optional, but a field that is sent is applied — including
+    setting an email or phone back to null, which is why the model validator
+    below re-checks reachability against the merged result rather than against
+    this patch alone.
+    """
+
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    phone: str | None = Field(default=None, max_length=20)
+    whatsapp: str | None = Field(default=None, max_length=20)
+    email: EmailStr | None = None
+
+    language: str | None = Field(default=None, max_length=10)
+    timezone: str | None = Field(default=None, max_length=64)
+
+    quiet_hours_start: time | None = None
+    quiet_hours_end: time | None = None
+
+    @field_validator("timezone")
+    @classmethod
+    def real_timezone(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        try:
+            return validate_timezone(v)
+        except UnknownTimezone as exc:
+            raise ValueError(str(exc)) from exc
 
 
 class PersonResponse(BaseModel):
@@ -254,33 +365,121 @@ class ReminderCreate(BaseModel):
         due_date, or an expiry with only an rrule, would be accepted by every
         field validator above and then generate nothing at all.
         """
+        self.warn_before_days = check_schedule(
+            self.schedule_kind, self.rrule, self.due_date, self.warn_before_days
+        )
+        return self
+
+
+class ReminderUpdate(BaseModel):
+    """
+    What may be changed on a reminder that already exists.
+
+    `person_id` is absent. Moving a reminder to a different person would mean
+    the occurrences already sent went to someone the history no longer names.
+    Create a new reminder for the new person instead.
+
+    The schedule fields are here, and changing any of them regenerates the
+    future. The route checks the merged schedule, not this patch, because
+    sending only `rrule` to a reminder that is an expiry would otherwise look
+    valid and then produce nothing.
+    """
+
+    title: str | None = Field(default=None, min_length=1, max_length=255)
+    category: str | None = None
+    notes: str | None = None
+
+    schedule_kind: str | None = None
+    rrule: str | None = None
+    due_date: date | None = None
+    warn_before_days: list[int] | None = None
+
+    time_of_day: time | None = None
+    timezone: str | None = None
+
+    channel_ladder: list[str] | None = None
+    max_attempts: int | None = Field(default=None, ge=1, le=10)
+    grace_minutes: int | None = Field(default=None, ge=1, le=1440)
+
+    notify_email: EmailStr | None = None
+
+    is_paused: bool | None = Field(
+        default=None,
+        description=(
+            "Pausing stops future occurrences being claimed. It does not "
+            "delete them, so unpausing resumes where it left off."
+        ),
+    )
+
+    @field_validator("category")
+    @classmethod
+    def known_category(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        if v not in CATEGORIES:
+            raise ValueError(
+                f"Unknown category '{v}'. One of: {', '.join(CATEGORIES)}."
+            )
+        return v
+
+    @field_validator("schedule_kind")
+    @classmethod
+    def known_kind(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        if v not in SCHEDULE_KINDS:
+            raise ValueError(
+                f"Unknown schedule kind '{v}'. One of: {', '.join(SCHEDULE_KINDS)}."
+            )
+        return v
+
+    @field_validator("channel_ladder")
+    @classmethod
+    def known_channels(cls, v: list[str] | None) -> list[str] | None:
+        if v is None:
+            return None
+        if not v:
+            raise ValueError(
+                "A reminder needs at least one channel, or it can never be "
+                "delivered."
+            )
+        unknown = [c for c in v if c not in CHANNEL_NAMES]
+        if unknown:
+            raise ValueError(
+                f"Unknown channel(s): {', '.join(unknown)}. "
+                f"One of: {', '.join(CHANNEL_NAMES)}."
+            )
+        if len(set(v)) != len(v):
+            raise ValueError(
+                "The same channel twice in one ladder would contact the person "
+                "the same way twice and call it an escalation."
+            )
+        return v
+
+    @field_validator("timezone")
+    @classmethod
+    def real_timezone(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
         try:
-            if self.schedule_kind == "repeating":
-                if not self.rrule:
-                    raise InvalidSchedule(
-                        "A repeating reminder needs a repeat rule, for example "
-                        "FREQ=MONTHLY;BYMONTHDAY=5 for the 5th of each month."
-                    )
-                validate_rrule(self.rrule)
-
-            elif self.schedule_kind == "expiry":
-                if self.due_date is None:
-                    raise InvalidSchedule(
-                        "An expiry reminder needs the date it expires on."
-                    )
-                self.warn_before_days = normalise_warn_before_days(
-                    self.warn_before_days
-                )
-
-            elif self.schedule_kind == "balance":
-                raise InvalidSchedule(
-                    "Balance-check reminders are not built yet: they need a "
-                    "per-provider API call to know whether anything is due."
-                )
-        except InvalidSchedule as exc:
+            return validate_timezone(v)
+        except UnknownTimezone as exc:
             raise ValueError(str(exc)) from exc
 
-        return self
+    def touches_schedule(self) -> bool:
+        """Whether this edit changes when the reminder fires."""
+        sent = self.model_fields_set
+        return bool(
+            sent
+            & {
+                "schedule_kind",
+                "rrule",
+                "due_date",
+                "warn_before_days",
+                "time_of_day",
+                "timezone",
+            }
+        )
 
 
 class ReminderResponse(BaseModel):
@@ -315,6 +514,20 @@ class ReminderCreated(BaseModel):
     occurrences_created: int
     next_due_at: datetime | None
     next_due_local: datetime | None
+
+
+class ReminderUpdated(ReminderCreated):
+    """
+    The same, plus what the edit did to the queue.
+
+    `occurrences_cancelled` is the count of future, untouched moments that were
+    dropped and replaced. It is reported rather than hidden because an edit
+    that silently empties the queue — a new rule that produces nothing — looks
+    identical to a successful one until the night nobody is reminded.
+    """
+
+    occurrences_cancelled: int = 0
+    schedule_changed: bool = False
 
 
 # ----------------------------------------------------------------
